@@ -280,9 +280,8 @@ def profile_upsert(
 ) -> None:
     """Upsert a profile snapshot row keyed by date serial.
 
-    - If a row with the same date serial already exists: UPDATE it in place
-      (important for daily metrics collected multiple times per day — the
-      last run of the day consolidates the final value).
+    - If a row with the same date serial already exists: UPDATE the LAST one
+      in place (last-wins aligns with the dashboard's byDay dedup).
     - If no row exists for the date: APPEND a new row.
 
     The date is stored as a Lotus epoch serial (integer) in column A.
@@ -307,14 +306,14 @@ def profile_upsert(
     row_vals = _row_values(row_dict, columns)
     end_col = _col_letter(len(columns) - 1)
 
-    # Search for existing row with matching date serial (skip header at index 0)
+    # Search for existing row with matching date serial (skip header at index 0).
+    # Take the LAST match so it aligns with the dashboard's byDay dedup (also last-wins).
     target_row: Optional[int] = None
     for i, cell_row in enumerate(existing_values):
         if i == 0:
             continue  # skip header
         if cell_row and str(cell_row[0]) == str(date_serial):
-            target_row = i + 1  # 1-based sheet row
-            break
+            target_row = i + 1  # 1-based sheet row — keep scanning, last match wins
 
     if target_row is not None:
         rng = f"{sheet_name}!A{target_row}:{end_col}{target_row}"
