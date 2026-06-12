@@ -2,7 +2,7 @@
 
 import logging
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -114,23 +114,26 @@ class IGClient:
             log.warning("get_reach_28d parse error for user %s: %s", self._user_id, exc)
             return 0
 
-    def get_account_insights_extra(self) -> Dict[str, int]:
-        """Return extra daily account metrics.
+    def get_daily_metrics_today(self) -> Dict[str, int]:
+        """Return today's daily account metrics.
 
         Returns dict with:
           - alcance_dia: reach for the current day
-          - contas_engajadas_28d: accounts engaged today (metric_type=total_value/day)
-          - interacoes_totais_28d: total interactions today (metric_type=total_value/day)
+          - views_dia: views today (metric_type=total_value/day)
+          - contas_engajadas_dia: accounts engaged today (metric_type=total_value/day)
+          - interacoes_dia: total interactions today (metric_type=total_value/day)
 
-        Note: accounts_engaged and total_interactions only support period=day with
-        metric_type=total_value; period=days_28 returns 400 for these metrics.
+        Note: views, accounts_engaged and total_interactions only support
+        period=day with metric_type=total_value; period=days_28 returns 400 for
+        these metrics.
 
         All default to 0 on any error (graceful degradation).
         """
         result: Dict[str, int] = {
             "alcance_dia": 0,
-            "contas_engajadas_28d": 0,
-            "interacoes_totais_28d": 0,
+            "views_dia": 0,
+            "contas_engajadas_dia": 0,
+            "interacoes_dia": 0,
         }
 
         # Daily reach (period=day, no metric_type needed)
@@ -145,34 +148,93 @@ class IGClient:
                     if values:
                         result["alcance_dia"] = int(values[-1].get("value") or 0)
         except Exception as exc:
-            log.warning("get_account_insights_extra reach/day parse error for %s: %s", self._user_id, exc)
+            log.warning("get_daily_metrics_today reach/day parse error for %s: %s", self._user_id, exc)
 
-        # Daily engagement metrics (period=day + metric_type=total_value).
-        # accounts_engaged and total_interactions do NOT support period=days_28;
-        # using period=day gives today's aggregate via total_value.value.
+        # Daily total_value metrics (period=day + metric_type=total_value).
+        # views, accounts_engaged and total_interactions do NOT support
+        # period=days_28; period=day gives today's aggregate via total_value.value.
         tv_data = self._get_safe(
             f"{self._user_id}/insights",
             params={
-                "metric": "accounts_engaged,total_interactions",
+                "metric": "views,accounts_engaged,total_interactions",
                 "period": "day",
                 "metric_type": "total_value",
             },
         )
-        log.info("tv_data for user %s: keys=%s items=%d",
-                 self._user_id,
-                 list(tv_data.keys()),
-                 len(tv_data.get("data", [])))
+        _MAP = {
+            "views": "views_dia",
+            "accounts_engaged": "contas_engajadas_dia",
+            "total_interactions": "interacoes_dia",
+        }
         try:
             for item in tv_data.get("data", []):
-                name = item.get("name")
-                val = _parse_insight_value(item)
-                log.info("tv_data item: name=%s val=%s raw=%s", name, val, item.get("total_value"))
-                if name == "accounts_engaged":
-                    result["contas_engajadas_28d"] = val
-                elif name == "total_interactions":
-                    result["interacoes_totais_28d"] = val
+                key = _MAP.get(item.get("name"))
+                if key:
+                    result[key] = _parse_insight_value(item)
         except Exception as exc:
-            log.warning("get_account_insights_extra tv parse error for %s: %s", self._user_id, exc)
+            log.warning("get_daily_metrics_today tv parse error for %s: %s", self._user_id, exc)
+
+        return result
+
+    def get_daily_metrics_for_day(self, day: date) -> Dict[str, Optional[int]]:
+        """Return daily account metrics for a SPECIFIC past day (BRT).
+
+        Used by the rolling reconciliation window (D-1, D-2) and the backfill.
+        Queries a single-day window [day, day+1) so each metric's total_value /
+        series point maps unambiguously to `day`.
+
+        Values that are missing or negative (API garbage before a metric's
+        availability date) become None → the caller writes an EMPTY cell, never
+        a fake 0. All keys default to None on error (graceful degradation).
+        """
+        since = day.isoformat()
+        until = (day + timedelta(days=1)).isoformat()
+        result: Dict[str, Optional[int]] = {
+            "alcance_dia": None,
+            "views_dia": None,
+            "contas_engajadas_dia": None,
+            "interacoes_dia": None,
+        }
+
+        # Daily reach as a single-day series window
+        reach_data = self._get_safe(
+            f"{self._user_id}/insights",
+            params={"metric": "reach", "period": "day", "since": since, "until": until},
+        )
+        try:
+            for item in reach_data.get("data", []):
+                if item.get("name") == "reach":
+                    values = item.get("values", [])
+                    if values:
+                        result["alcance_dia"] = _sanitize(values[-1].get("value"))
+        except Exception as exc:
+            log.warning("get_daily_metrics_for_day reach parse error %s %s: %s", self._user_id, since, exc)
+
+        # total_value metrics over the single-day window
+        tv_data = self._get_safe(
+            f"{self._user_id}/insights",
+            params={
+                "metric": "views,accounts_engaged,total_interactions",
+                "period": "day",
+                "metric_type": "total_value",
+                "since": since,
+                "until": until,
+            },
+        )
+        _MAP = {
+            "views": "views_dia",
+            "accounts_engaged": "contas_engajadas_dia",
+            "total_interactions": "interacoes_dia",
+        }
+        try:
+            for item in tv_data.get("data", []):
+                key = _MAP.get(item.get("name"))
+                if key:
+                    tv = item.get("total_value") or {}
+                    raw = tv.get("value") if isinstance(tv, dict) else tv
+                    result[key] = _sanitize(raw)
+        except Exception as exc:
+            log.warning("get_daily_metrics_for_day tv parse error %s %s: %s", self._user_id, since, exc)
 
         return result
 
@@ -271,6 +333,23 @@ class IGClient:
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+def _sanitize(raw: Any) -> Optional[int]:
+    """Coerce a raw API value to int, or None if missing/negative.
+
+    A metric that does not exist yet for a given day comes back as 0 or small
+    negative garbage (-3, -7). Negatives → None. Genuine 0 is kept (a real
+    zero-activity day); the backfill separately strips leading zeros before a
+    metric's first positive value.
+    """
+    if raw is None:
+        return None
+    try:
+        v = int(raw)
+    except (ValueError, TypeError):
+        return None
+    return None if v < 0 else v
+
 
 def _parse_insight_value(item: Dict[str, Any]) -> int:
     """Parse an insight item handling both values[] and total_value formats."""

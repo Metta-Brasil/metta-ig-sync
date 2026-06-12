@@ -16,11 +16,16 @@ Optional:
 import logging
 import os
 import sys
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from . import config
-from .instagram import IGClient, parse_media_date, parse_media_datetime
-from .sheets import _build_service, posts_overwrite, profile_upsert
+from .instagram import BRT, IGClient, parse_media_date, parse_media_datetime
+from .sheets import (
+    _build_service,
+    posts_overwrite,
+    profile_upsert,
+    profile_upsert_partial,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -84,17 +89,22 @@ def _build_post_row(media: dict, insights: dict) -> dict:
     }
 
 
-def _build_profile_row(profile: dict, reach_28d: int, extra: dict) -> dict:
-    """Build the profile row dict for the spreadsheet."""
+def _build_profile_row(profile: dict, reach_28d: int, extra: dict, today: date) -> dict:
+    """Build the profile row dict for the spreadsheet.
+
+    `today` is the BRT date (passed in) — not date.today(), which on the UTC
+    GitHub runner would roll to D+1 during the 21:00–24:00 BRT window.
+    """
     return {
-        "date": date.today(),
+        "date": today,
         "followers": profile["followers"],
         "following": profile["following"],
         "posts": profile["posts"],
         "reach_28d": reach_28d,
         "alcance_dia": extra.get("alcance_dia", 0),
-        "contas_engajadas_28d": extra.get("contas_engajadas_28d", 0),
-        "interacoes_totais_28d": extra.get("interacoes_totais_28d", 0),
+        "contas_engajadas_dia": extra.get("contas_engajadas_dia", 0),
+        "interacoes_dia": extra.get("interacoes_dia", 0),
+        "views_dia": extra.get("views_dia", 0),
     }
 
 
@@ -108,24 +118,38 @@ def sync_account(svc, account: dict, token: str) -> bool:
     log.info("=== Starting sync for account: %s (user_id=%s) ===", name, user_id)
 
     client = IGClient(token=token, user_id=user_id)
+    today = datetime.now(BRT).date()
 
-    # --- Profile snapshot ---
+    # --- Profile snapshot (today: full row) ---
     try:
         profile = client.get_profile()
         reach_28d = client.get_reach_28d()
-        extra = client.get_account_insights_extra()
-        profile_row = _build_profile_row(profile, reach_28d, extra)
+        extra = client.get_daily_metrics_today()
+        profile_row = _build_profile_row(profile, reach_28d, extra, today)
         log.info(
-            "[%s] Profile: followers=%d, following=%d, posts=%d, reach_28d=%d, "
-            "alcance_dia=%d, contas_engajadas_28d=%d, interacoes_28d=%d",
-            name, profile["followers"], profile["following"], profile["posts"],
-            reach_28d, extra["alcance_dia"], extra["contas_engajadas_28d"],
-            extra["interacoes_totais_28d"],
+            "[%s] Profile %s: followers=%d, following=%d, posts=%d, reach_28d=%d, "
+            "alcance_dia=%d, views=%d, contas_engajadas=%d, interacoes=%d",
+            name, today, profile["followers"], profile["following"], profile["posts"],
+            reach_28d, extra["alcance_dia"], extra["views_dia"],
+            extra["contas_engajadas_dia"], extra["interacoes_dia"],
         )
         profile_upsert(svc, sheet_profile, profile_row)
     except Exception as exc:
         log.error("[%s] Profile sync failed: %s", name, exc, exc_info=True)
         return False
+
+    # --- Rolling reconciliation window (D-1, D-2: daily metrics only) ---
+    # The API finalizes insight data within ~48h. Re-fetching D-1/D-2 lets the
+    # daily cells settle to their final values; days older than D-2 fall out of
+    # the window and are never touched again, so closed periods freeze on their
+    # own. A failure here must NOT block the posts sync below.
+    try:
+        for delta in (1, 2):
+            day = today - timedelta(days=delta)
+            metrics = client.get_daily_metrics_for_day(day)
+            profile_upsert_partial(svc, sheet_profile, day, metrics)
+    except Exception as exc:
+        log.error("[%s] Reconciliation window failed (non-fatal): %s", name, exc, exc_info=True)
 
     # --- Posts ---
     try:

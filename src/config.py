@@ -1,6 +1,7 @@
 """Centralized configuration for metta-ig-sync."""
 
 import os
+from datetime import date
 from typing import Any, Dict, List
 
 SPREADSHEET_ID = "1m_oCjgeMPfEaplFNvK0oLRwYR9yoS3AkYzWkO3uWXvY"
@@ -25,7 +26,9 @@ ACCOUNTS: List[Dict[str, Any]] = [
 ]
 
 # Profile snapshot columns
-# Colunas F-H adicionadas em 2026-06 — dashboard continua lendo A:E sem quebrar
+# Colunas F-I são métricas DIÁRIAS da conta (não 28d). Headers G/H corrigidos e
+# coluna I (Views) adicionada em 2026-06 via PROFILE_HEADER_RENAMES — dashboard
+# continua lendo posicionalmente sem quebrar.
 PROFILE_COLUMNS: List[Dict[str, str]] = [
     {"header": "Data",                    "key": "date",                   "format": "dd/MM/yyyy"},
     {"header": "Seguidores",              "key": "followers",              "format": "0"},
@@ -33,9 +36,35 @@ PROFILE_COLUMNS: List[Dict[str, str]] = [
     {"header": "Posts",                  "key": "posts",                  "format": "0"},
     {"header": "Alcance 28d",            "key": "reach_28d",              "format": "0"},
     {"header": "Alcance Dia",            "key": "alcance_dia",            "format": "0"},
-    {"header": "Contas Engajadas 28d",   "key": "contas_engajadas_28d",   "format": "0"},
-    {"header": "Interações 28d",         "key": "interacoes_totais_28d",  "format": "0"},
+    {"header": "Contas Engajadas",       "key": "contas_engajadas_dia",   "format": "0"},
+    {"header": "Interações",             "key": "interacoes_dia",         "format": "0"},
+    {"header": "Views",                  "key": "views_dia",              "format": "0"},
 ]
+
+# Header renames applied in-place by ensure_headers when migrating an existing
+# sheet. Maps the OLD header text → the NEW header text. Lets the first run of
+# the new code rename G/H and append I with no manual sheet edit and no broken
+# cron window. Any divergence outside this map still raises (corruption guard).
+PROFILE_HEADER_RENAMES: Dict[str, str] = {
+    "Contas Engajadas 28d": "Contas Engajadas",
+    "Interações 28d": "Interações",
+}
+
+# Daily-metric column keys (F-I), written by both the hourly partial upsert and
+# the backfill. Order matters: matches columns F, G, H, I.
+PROFILE_DAILY_KEYS: List[str] = [
+    "alcance_dia",
+    "contas_engajadas_dia",
+    "interacoes_dia",
+    "views_dia",
+]
+
+# Backfill ranges (proved via live API probes, both accounts):
+#   - reach daily series available from 2025-01-01 (API keeps ~2 years)
+#   - views / total_interactions non-zero from ~aug/2025
+#   - accounts_engaged non-zero from ~nov/2025 (handled by sanitize, not a hard date)
+BACKFILL_REACH_START = date(2025, 1, 1)
+BACKFILL_TV_START = date(2025, 8, 1)
 
 # Posts columns
 # Coluna P (Hora) adicionada em 2026-06 — dashboard continua lendo A:O sem quebrar

@@ -142,14 +142,18 @@ def ensure_headers(
     spreadsheet_id: str,
     sheet_name: str,
     headers: List[str],
+    renames: Optional[Dict[str, str]] = None,
 ) -> int:
     """Ensure the sheet exists and has exactly `headers` in row 1.
 
     - Sheet missing → create it with the full header.
-    - Sheet exists, header is a prefix of `headers` → extend with the new columns.
-    - Sheet exists, header already matches → no-op.
-    - Sheet exists, header diverges (not a prefix) → raises RuntimeError to
-      prevent silent data corruption.
+    - Sheet exists → apply `renames` (old header text → new) in-place first, so
+      a column that was renamed (e.g. "Interações 28d" → "Interações") is
+      normalized before the prefix check. Then:
+        - header is a prefix of `headers` → extend with the new columns.
+        - header already matches → no-op.
+        - header diverges (not a prefix) → raises RuntimeError to prevent
+          silent data corruption.
 
     Returns the sheet_id.
     """
@@ -191,6 +195,22 @@ def ensure_headers(
         range=rng_h,
     ).execute()
     current: List[str] = existing.get("values", [[]])[0] if existing.get("values") else []
+
+    # Apply in-place renames so renamed columns pass the prefix check below.
+    if renames and current:
+        renamed = [renames.get(h, h) for h in current]
+        if renamed != current:
+            changed = [old for old, new in zip(current, renamed) if old != new]
+            log.info("ensure_headers: renaming columns in '%s': %s", sheet_name, changed)
+            if not config.DRY_RUN:
+                end_col = _col_letter(len(renamed) - 1)
+                svc.spreadsheets().values().update(
+                    spreadsheetId=spreadsheet_id,
+                    range=f"{sheet_name}!A1:{end_col}1",
+                    valueInputOption="USER_ENTERED",
+                    body={"values": [renamed]},
+                ).execute()
+            current = renamed
 
     if current == headers:
         return sheet_id
@@ -288,7 +308,10 @@ def profile_upsert(
     """
     columns = config.PROFILE_COLUMNS
     headers = [c["header"] for c in columns]
-    sheet_id = ensure_headers(svc, config.SPREADSHEET_ID, sheet_name, headers)
+    sheet_id = ensure_headers(
+        svc, config.SPREADSHEET_ID, sheet_name, headers,
+        renames=config.PROFILE_HEADER_RENAMES,
+    )
 
     date_serial = (
         _to_sheet_serial(row_dict["date"])
@@ -354,6 +377,103 @@ def profile_upsert(
             num_data_rows=1,
         )
         log.info("profile_upsert: appended row %d to %s (date=%s).", next_row, sheet_name, row_dict.get("date"))
+
+
+def profile_upsert_partial(
+    svc,
+    sheet_name: str,
+    day: _date,
+    metrics: Dict[str, Any],
+) -> None:
+    """Update ONLY the daily-metric columns (F:I) of a past day's row.
+
+    Used by the rolling reconciliation window (D-1, D-2). Never touches A:E, so
+    a day's followers/reach_28d snapshot is preserved while its daily metrics are
+    reconciled as the API finalizes them (~48h).
+
+    - Row for `day` exists → update F:I in place.
+    - Row missing → append a new row with A=date, B:E empty, F:I=metrics.
+    - All four metrics None (transient API failure) → skip entirely, so a good
+      cell is never overwritten with a blank.
+    """
+    columns = config.PROFILE_COLUMNS
+    headers = [c["header"] for c in columns]
+    sheet_id = ensure_headers(
+        svc, config.SPREADSHEET_ID, sheet_name, headers,
+        renames=config.PROFILE_HEADER_RENAMES,
+    )
+
+    daily_keys = config.PROFILE_DAILY_KEYS
+    if all(metrics.get(k) is None for k in daily_keys):
+        log.warning(
+            "profile_upsert_partial: all metrics None for %s in %s — skipping (no overwrite).",
+            day, sheet_name,
+        )
+        return
+
+    date_serial = _to_sheet_serial(day)
+    daily_vals = [_to_sheet_value(k, metrics.get(k)) for k in daily_keys]  # F,G,H,I
+
+    existing = svc.spreadsheets().values().get(
+        spreadsheetId=config.SPREADSHEET_ID,
+        range=f"{sheet_name}!A:A",
+        valueRenderOption="UNFORMATTED_VALUE",
+    ).execute()
+    existing_values = existing.get("values", [])
+
+    # Last-match-wins, aligned with profile_upsert and the dashboard byDay dedup.
+    target_row: Optional[int] = None
+    for i, cell_row in enumerate(existing_values):
+        if i == 0:
+            continue
+        try:
+            cell_serial = int(float(cell_row[0])) if cell_row else None
+        except (ValueError, TypeError):
+            continue
+        if cell_serial == date_serial:
+            target_row = i + 1
+
+    # First daily column is F (index 5)
+    first_daily_col = _col_letter(len(columns) - len(daily_keys))  # F
+    last_col = _col_letter(len(columns) - 1)  # I
+
+    if target_row is not None:
+        rng = f"{sheet_name}!{first_daily_col}{target_row}:{last_col}{target_row}"
+        if config.DRY_RUN:
+            log.info("[DRY_RUN] profile_upsert_partial: would UPDATE %s of row %d in %s (day=%s)",
+                     f"{first_daily_col}:{last_col}", target_row, sheet_name, day)
+            return
+        svc.spreadsheets().values().update(
+            spreadsheetId=config.SPREADSHEET_ID,
+            range=rng,
+            valueInputOption="USER_ENTERED",
+            body={"values": [daily_vals]},
+        ).execute()
+        log.info("profile_upsert_partial: updated %s of row %d in %s (day=%s).",
+                 f"{first_daily_col}:{last_col}", target_row, sheet_name, day)
+    else:
+        next_row = len(existing_values) + 1
+        # A=serial, B-E empty, F-I=daily_vals
+        n_empty = len(columns) - len(daily_keys) - 1  # B,C,D,E
+        full_row = [date_serial] + [""] * n_empty + daily_vals
+        rng = f"{sheet_name}!A{next_row}:{last_col}{next_row}"
+        if config.DRY_RUN:
+            log.info("[DRY_RUN] profile_upsert_partial: would APPEND row %d to %s (day=%s)",
+                     next_row, sheet_name, day)
+            return
+        svc.spreadsheets().values().update(
+            spreadsheetId=config.SPREADSHEET_ID,
+            range=rng,
+            valueInputOption="USER_ENTERED",
+            body={"values": [full_row]},
+        ).execute()
+        _apply_column_formats(
+            svc, config.SPREADSHEET_ID, sheet_id,
+            columns=columns,
+            start_row_zero=next_row - 1,
+            num_data_rows=1,
+        )
+        log.info("profile_upsert_partial: appended row %d to %s (day=%s).", next_row, sheet_name, day)
 
 
 def posts_overwrite(
