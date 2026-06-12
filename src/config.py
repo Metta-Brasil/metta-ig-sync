@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 
 SPREADSHEET_ID = "1m_oCjgeMPfEaplFNvK0oLRwYR9yoS3AkYzWkO3uWXvY"
 
-IG_BASE_URL = "https://graph.facebook.com/v21.0"
+IG_BASE_URL = "https://graph.facebook.com/v23.0"
 
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
 

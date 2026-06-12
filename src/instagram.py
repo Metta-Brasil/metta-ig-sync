@@ -48,6 +48,11 @@ class IGClient:
                     )
                     time.sleep(wait)
                     continue
+                if not resp.ok:
+                    log.warning(
+                        "HTTP %s for %s: %s",
+                        resp.status_code, path, resp.text[:600],
+                    )
                 resp.raise_for_status()
                 return resp.json()
             except requests.RequestException as exc:
@@ -104,7 +109,7 @@ class IGClient:
             values = items[0].get("values", [])
             if not values:
                 return 0
-            return int(values[-1].get("value", 0))
+            return int(values[-1].get("value") or 0)
         except Exception as exc:
             log.warning("get_reach_28d parse error for user %s: %s", self._user_id, exc)
             return 0
@@ -135,11 +140,12 @@ class IGClient:
                 if item.get("name") == "reach":
                     values = item.get("values", [])
                     if values:
-                        result["alcance_dia"] = int(values[-1].get("value", 0))
+                        result["alcance_dia"] = int(values[-1].get("value") or 0)
         except Exception as exc:
             log.warning("get_account_insights_extra reach/day parse error for %s: %s", self._user_id, exc)
 
         # 28-day aggregates (accounts_engaged + total_interactions)
+        # Requires metric_type=total_value; response uses total_value.value instead of values[]
         tv_data = self._get_safe(
             f"{self._user_id}/insights",
             params={
@@ -148,10 +154,15 @@ class IGClient:
                 "metric_type": "total_value",
             },
         )
+        log.info("tv_data for user %s: keys=%s items=%d",
+                 self._user_id,
+                 list(tv_data.keys()),
+                 len(tv_data.get("data", [])))
         try:
             for item in tv_data.get("data", []):
                 name = item.get("name")
                 val = _parse_insight_value(item)
+                log.info("tv_data item: name=%s val=%s raw=%s", name, val, item.get("total_value"))
                 if name == "accounts_engaged":
                     result["contas_engajadas_28d"] = val
                 elif name == "total_interactions":
@@ -261,10 +272,10 @@ def _parse_insight_value(item: Dict[str, Any]) -> int:
     """Parse an insight item handling both values[] and total_value formats."""
     values = item.get("values", [])
     if values:
-        return int(values[-1].get("value", 0))
+        return int(values[-1].get("value") or 0)
     tv = item.get("total_value", {})
     if isinstance(tv, dict):
-        return int(tv.get("value", 0))
+        return int(tv.get("value") or 0)
     if isinstance(tv, (int, float)):
         return int(tv)
     return 0
