@@ -25,15 +25,20 @@ ACCOUNTS: List[Dict[str, Any]] = [
 ]
 
 # Profile snapshot columns
+# Colunas F-H adicionadas em 2026-06 — dashboard continua lendo A:E sem quebrar
 PROFILE_COLUMNS: List[Dict[str, str]] = [
-    {"header": "Data",         "key": "date",       "format": "dd/MM/yyyy"},
-    {"header": "Seguidores",   "key": "followers",  "format": "0"},
-    {"header": "Seguindo",     "key": "following",  "format": "0"},
-    {"header": "Posts",        "key": "posts",      "format": "0"},
-    {"header": "Alcance 28d",  "key": "reach_28d",  "format": "0"},
+    {"header": "Data",                    "key": "date",                   "format": "dd/MM/yyyy"},
+    {"header": "Seguidores",              "key": "followers",              "format": "0"},
+    {"header": "Seguindo",               "key": "following",              "format": "0"},
+    {"header": "Posts",                  "key": "posts",                  "format": "0"},
+    {"header": "Alcance 28d",            "key": "reach_28d",              "format": "0"},
+    {"header": "Alcance Dia",            "key": "alcance_dia",            "format": "0"},
+    {"header": "Contas Engajadas 28d",   "key": "contas_engajadas_28d",   "format": "0"},
+    {"header": "Interações 28d",         "key": "interacoes_totais_28d",  "format": "0"},
 ]
 
 # Posts columns
+# Coluna P (Hora) adicionada em 2026-06 — dashboard continua lendo A:O sem quebrar
 POSTS_COLUMNS: List[Dict[str, str]] = [
     {"header": "Post ID",                "key": "post_id",            "format": "@"},
     {"header": "Data",                   "key": "date",               "format": "dd/MM/yyyy"},
@@ -50,6 +55,7 @@ POSTS_COLUMNS: List[Dict[str, str]] = [
     {"header": "Repostagens",            "key": "reposts",            "format": "0"},
     {"header": "Skip Rate %",            "key": "skip_rate",          "format": "0.00"},
     {"header": "Taxa Engajamento %",     "key": "engagement_rate",    "format": "0.00"},
+    {"header": "Hora",                   "key": "hora",               "format": "@"},
 ]
 
 RETRY_BASE_SECONDS = 5

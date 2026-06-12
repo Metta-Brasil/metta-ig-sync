@@ -19,8 +19,8 @@ import sys
 from datetime import date
 
 from . import config
-from .instagram import IGClient, parse_media_date
-from .sheets import _build_service, posts_overwrite, profile_append
+from .instagram import IGClient, parse_media_date, parse_media_datetime
+from .sheets import _build_service, posts_overwrite, profile_upsert
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,10 +36,16 @@ def _build_post_row(media: dict, insights: dict) -> dict:
     ts = media.get("timestamp", "")
     post_date = parse_media_date(ts) if ts else date.today()
 
+    # Extract BRT hour for the new "Hora" column
+    if ts:
+        dt_brt = parse_media_datetime(ts)
+        hora = dt_brt.strftime("%H:%M")
+    else:
+        hora = ""
+
     caption_raw = media.get("caption") or ""
     caption = caption_raw[:500]
 
-    # Thumbnail: for images use media_url, for carousels/videos use thumbnail_url
     thumbnail_url = (
         media.get("thumbnail_url")
         or media.get("media_url")
@@ -74,6 +80,21 @@ def _build_post_row(media: dict, insights: dict) -> dict:
         "reposts": reposts,
         "skip_rate": skip_rate,
         "engagement_rate": engagement_rate,
+        "hora": hora,
+    }
+
+
+def _build_profile_row(profile: dict, reach_28d: int, extra: dict) -> dict:
+    """Build the profile row dict for the spreadsheet."""
+    return {
+        "date": date.today(),
+        "followers": profile["followers"],
+        "following": profile["following"],
+        "posts": profile["posts"],
+        "reach_28d": reach_28d,
+        "alcance_dia": extra.get("alcance_dia", 0),
+        "contas_engajadas_28d": extra.get("contas_engajadas_28d", 0),
+        "interacoes_totais_28d": extra.get("interacoes_totais_28d", 0),
     }
 
 
@@ -92,19 +113,16 @@ def sync_account(svc, account: dict, token: str) -> bool:
     try:
         profile = client.get_profile()
         reach_28d = client.get_reach_28d()
-        profile_row = {
-            "date": date.today(),
-            "followers": profile["followers"],
-            "following": profile["following"],
-            "posts": profile["posts"],
-            "reach_28d": reach_28d,
-        }
+        extra = client.get_account_insights_extra()
+        profile_row = _build_profile_row(profile, reach_28d, extra)
         log.info(
-            "[%s] Profile: followers=%d, following=%d, posts=%d, reach_28d=%d",
-            name, profile["followers"], profile["following"],
-            profile["posts"], reach_28d,
+            "[%s] Profile: followers=%d, following=%d, posts=%d, reach_28d=%d, "
+            "alcance_dia=%d, contas_engajadas_28d=%d, interacoes_28d=%d",
+            name, profile["followers"], profile["following"], profile["posts"],
+            reach_28d, extra["alcance_dia"], extra["contas_engajadas_28d"],
+            extra["interacoes_totais_28d"],
         )
-        profile_append(svc, sheet_profile, profile_row)
+        profile_upsert(svc, sheet_profile, profile_row)
     except Exception as exc:
         log.error("[%s] Profile sync failed: %s", name, exc, exc_info=True)
         return False

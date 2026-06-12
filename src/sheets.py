@@ -3,7 +3,7 @@
 Handles:
 - Service account auth (raw JSON or base64)
 - Sheet auto-creation if missing (addSheet via batchUpdate)
-- profile_append: append one row per day, deduplicated by date serial
+- profile_upsert: upsert one row per day, keyed by date serial
 - posts_overwrite: clear + rewrite complete dataset
 """
 
@@ -137,6 +137,90 @@ def _get_or_create_sheet(
     return sheet_id, False
 
 
+def ensure_headers(
+    svc,
+    spreadsheet_id: str,
+    sheet_name: str,
+    headers: List[str],
+) -> int:
+    """Ensure the sheet exists and has exactly `headers` in row 1.
+
+    - Sheet missing → create it with the full header.
+    - Sheet exists, header is a prefix of `headers` → extend with the new columns.
+    - Sheet exists, header already matches → no-op.
+    - Sheet exists, header diverges (not a prefix) → raises RuntimeError to
+      prevent silent data corruption.
+
+    Returns the sheet_id.
+    """
+    meta = svc.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields="sheets.properties",
+    ).execute()
+
+    sheet_id: Optional[int] = None
+    for sheet in meta.get("sheets", []):
+        props = sheet.get("properties", {})
+        if props.get("title") == sheet_name:
+            sheet_id = int(props["sheetId"])
+            break
+
+    if sheet_id is None:
+        # Create and write header
+        log.info("ensure_headers: creating sheet '%s'.", sheet_name)
+        resp = svc.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": [{"addSheet": {"properties": {"title": sheet_name}}}]},
+        ).execute()
+        sheet_id = int(resp["replies"][0]["addSheet"]["properties"]["sheetId"])
+        rng = f"{sheet_name}!A1:{_col_letter(len(headers) - 1)}1"
+        if not config.DRY_RUN:
+            svc.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=rng,
+                valueInputOption="USER_ENTERED",
+                body={"values": [headers]},
+            ).execute()
+        log.info("ensure_headers: created '%s' with %d cols.", sheet_name, len(headers))
+        return sheet_id
+
+    # Sheet exists — read current header
+    rng_h = f"{sheet_name}!1:1"
+    existing = svc.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=rng_h,
+    ).execute()
+    current: List[str] = existing.get("values", [[]])[0] if existing.get("values") else []
+
+    if current == headers:
+        return sheet_id
+
+    if headers[:len(current)] != current:
+        raise RuntimeError(
+            f"ensure_headers: sheet '{sheet_name}' header diverges from expected. "
+            f"Current={current!r}, Expected={headers!r}. Aborting to prevent corruption."
+        )
+
+    # Current header is a strict prefix — extend with new columns
+    new_cols = headers[len(current):]
+    start_col = _col_letter(len(current))
+    end_col = _col_letter(len(headers) - 1)
+    rng_new = f"{sheet_name}!{start_col}1:{end_col}1"
+    log.info(
+        "ensure_headers: extending '%s' header by %d col(s): %s",
+        sheet_name, len(new_cols), new_cols,
+    )
+    if not config.DRY_RUN:
+        svc.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=rng_new,
+            valueInputOption="USER_ENTERED",
+            body={"values": [new_cols]},
+        ).execute()
+
+    return sheet_id
+
+
 def _apply_column_formats(
     svc,
     spreadsheet_id: str,
@@ -189,64 +273,80 @@ def _apply_column_formats(
 # Public write functions
 # ---------------------------------------------------------------------------
 
-def profile_append(
+def profile_upsert(
     svc,
     sheet_name: str,
     row_dict: Dict[str, Any],
 ) -> None:
-    """Append a profile snapshot row if no row with the same date serial already exists.
+    """Upsert a profile snapshot row keyed by date serial.
+
+    - If a row with the same date serial already exists: UPDATE it in place
+      (important for daily metrics collected multiple times per day — the
+      last run of the day consolidates the final value).
+    - If no row exists for the date: APPEND a new row.
 
     The date is stored as a Lotus epoch serial (integer) in column A.
-    Deduplication: reads existing col A values and skips if serial already present.
     """
     columns = config.PROFILE_COLUMNS
     headers = [c["header"] for c in columns]
-    sheet_id, existed = _get_or_create_sheet(svc, config.SPREADSHEET_ID, sheet_name, headers)
+    sheet_id = ensure_headers(svc, config.SPREADSHEET_ID, sheet_name, headers)
 
-    date_serial = _to_sheet_serial(row_dict["date"]) if isinstance(row_dict.get("date"), _date) else row_dict.get("date")
+    date_serial = (
+        _to_sheet_serial(row_dict["date"])
+        if isinstance(row_dict.get("date"), _date)
+        else row_dict.get("date")
+    )
 
-    # Read existing date column (col A)
-    rng_dates = f"{sheet_name}!A:A"
+    # Read all existing values in col A (date serials)
     existing = svc.spreadsheets().values().get(
         spreadsheetId=config.SPREADSHEET_ID,
-        range=rng_dates,
+        range=f"{sheet_name}!A:A",
     ).execute()
     existing_values = existing.get("values", [])
 
-    for cell_row in existing_values:
-        if cell_row and str(cell_row[0]) == str(date_serial):
-            log.info(
-                "profile_append: skipping %s/%s — date serial %s already present.",
-                sheet_name, row_dict.get("date"), date_serial,
-            )
-            return
-
-    # Find next empty row
-    next_row = len(existing_values) + 1
-
     row_vals = _row_values(row_dict, columns)
     end_col = _col_letter(len(columns) - 1)
-    rng = f"{sheet_name}!A{next_row}:{end_col}{next_row}"
 
-    if config.DRY_RUN:
-        log.info("[DRY_RUN] profile_append: would write row %d to %s: %s", next_row, sheet_name, row_vals)
-        return
+    # Search for existing row with matching date serial (skip header at index 0)
+    target_row: Optional[int] = None
+    for i, cell_row in enumerate(existing_values):
+        if i == 0:
+            continue  # skip header
+        if cell_row and str(cell_row[0]) == str(date_serial):
+            target_row = i + 1  # 1-based sheet row
+            break
 
-    svc.spreadsheets().values().update(
-        spreadsheetId=config.SPREADSHEET_ID,
-        range=rng,
-        valueInputOption="USER_ENTERED",
-        body={"values": [row_vals]},
-    ).execute()
-
-    # Apply formats to the new data row (0-based: next_row - 1)
-    _apply_column_formats(
-        svc, config.SPREADSHEET_ID, sheet_id,
-        columns=columns,
-        start_row_zero=next_row - 1,
-        num_data_rows=1,
-    )
-    log.info("profile_append: wrote row %d to %s (date=%s).", next_row, sheet_name, row_dict.get("date"))
+    if target_row is not None:
+        rng = f"{sheet_name}!A{target_row}:{end_col}{target_row}"
+        if config.DRY_RUN:
+            log.info("[DRY_RUN] profile_upsert: would UPDATE row %d in %s", target_row, sheet_name)
+            return
+        svc.spreadsheets().values().update(
+            spreadsheetId=config.SPREADSHEET_ID,
+            range=rng,
+            valueInputOption="USER_ENTERED",
+            body={"values": [row_vals]},
+        ).execute()
+        log.info("profile_upsert: updated row %d in %s (date=%s).", target_row, sheet_name, row_dict.get("date"))
+    else:
+        next_row = len(existing_values) + 1
+        rng = f"{sheet_name}!A{next_row}:{end_col}{next_row}"
+        if config.DRY_RUN:
+            log.info("[DRY_RUN] profile_upsert: would APPEND row %d to %s", next_row, sheet_name)
+            return
+        svc.spreadsheets().values().update(
+            spreadsheetId=config.SPREADSHEET_ID,
+            range=rng,
+            valueInputOption="USER_ENTERED",
+            body={"values": [row_vals]},
+        ).execute()
+        _apply_column_formats(
+            svc, config.SPREADSHEET_ID, sheet_id,
+            columns=columns,
+            start_row_zero=next_row - 1,
+            num_data_rows=1,
+        )
+        log.info("profile_upsert: appended row %d to %s (date=%s).", next_row, sheet_name, row_dict.get("date"))
 
 
 def posts_overwrite(
@@ -257,7 +357,7 @@ def posts_overwrite(
     """Overwrite all post rows: clear data area then rewrite header + all rows."""
     columns = config.POSTS_COLUMNS
     headers = [c["header"] for c in columns]
-    sheet_id, _ = _get_or_create_sheet(svc, config.SPREADSHEET_ID, sheet_name, headers)
+    sheet_id = ensure_headers(svc, config.SPREADSHEET_ID, sheet_name, headers)
     num_cols = len(columns)
     end_col = _col_letter(num_cols - 1)
 

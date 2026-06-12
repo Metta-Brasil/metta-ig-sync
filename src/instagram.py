@@ -4,12 +4,15 @@ import logging
 import time
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 import requests
 
 from . import config
 
 log = logging.getLogger(__name__)
+
+BRT = ZoneInfo("America/Sao_Paulo")
 
 # Metrics to request per media type
 _COMMON_INSIGHT_METRICS = "views,reach,saved,shares"
@@ -101,11 +104,62 @@ class IGClient:
             values = items[0].get("values", [])
             if not values:
                 return 0
-            # Take the last (most recent) value
             return int(values[-1].get("value", 0))
         except Exception as exc:
             log.warning("get_reach_28d parse error for user %s: %s", self._user_id, exc)
             return 0
+
+    def get_account_insights_extra(self) -> Dict[str, int]:
+        """Return extra daily account metrics.
+
+        Returns dict with:
+          - alcance_dia: reach for the most recent day
+          - contas_engajadas_28d: accounts engaged in last 28 days
+          - interacoes_totais_28d: total interactions in last 28 days
+
+        All default to 0 on any error (graceful degradation).
+        """
+        result: Dict[str, int] = {
+            "alcance_dia": 0,
+            "contas_engajadas_28d": 0,
+            "interacoes_totais_28d": 0,
+        }
+
+        # Daily reach (period=day, no metric_type needed)
+        reach_data = self._get_safe(
+            f"{self._user_id}/insights",
+            params={"metric": "reach", "period": "day"},
+        )
+        try:
+            for item in reach_data.get("data", []):
+                if item.get("name") == "reach":
+                    values = item.get("values", [])
+                    if values:
+                        result["alcance_dia"] = int(values[-1].get("value", 0))
+        except Exception as exc:
+            log.warning("get_account_insights_extra reach/day parse error for %s: %s", self._user_id, exc)
+
+        # 28-day aggregates (accounts_engaged + total_interactions)
+        tv_data = self._get_safe(
+            f"{self._user_id}/insights",
+            params={
+                "metric": "accounts_engaged,total_interactions",
+                "period": "days_28",
+                "metric_type": "total_value",
+            },
+        )
+        try:
+            for item in tv_data.get("data", []):
+                name = item.get("name")
+                val = _parse_insight_value(item)
+                if name == "accounts_engaged":
+                    result["contas_engajadas_28d"] = val
+                elif name == "total_interactions":
+                    result["interacoes_totais_28d"] = val
+        except Exception as exc:
+            log.warning("get_account_insights_extra tv parse error for %s: %s", self._user_id, exc)
+
+        return result
 
     def get_media_list(self, max_posts: int = 100) -> List[Dict[str, Any]]:
         """Return up to max_posts media items with basic fields, newest first."""
@@ -125,13 +179,11 @@ class IGClient:
             items = data.get("data", [])
             collected.extend(items)
 
-            # Pagination
             paging = data.get("paging", {})
             next_url = paging.get("next")
             if not next_url or len(collected) >= max_posts:
                 break
 
-            # Extract cursor from next URL for next page call
             cursors = paging.get("cursors", {})
             after = cursors.get("after")
             if after:
@@ -193,7 +245,6 @@ class IGClient:
                 elif name == "reposts":
                     result["reposts"] = int(val or 0)
                 elif name == "reels_skip_rate":
-                    # API may return as fraction (0.35) or percentage (35.0)
                     f = float(val or 0)
                     result["skip_rate"] = round(f * 100 if f <= 1.0 else f, 2)
         except Exception as exc:
@@ -202,10 +253,32 @@ class IGClient:
         return result
 
 
-def parse_media_date(timestamp: str) -> date:
-    """Parse ISO 8601 timestamp from Graph API to a Python date."""
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+def _parse_insight_value(item: Dict[str, Any]) -> int:
+    """Parse an insight item handling both values[] and total_value formats."""
+    values = item.get("values", [])
+    if values:
+        return int(values[-1].get("value", 0))
+    tv = item.get("total_value", {})
+    if isinstance(tv, dict):
+        return int(tv.get("value", 0))
+    if isinstance(tv, (int, float)):
+        return int(tv)
+    return 0
+
+
+def parse_media_datetime(timestamp: str) -> datetime:
+    """Parse ISO 8601 timestamp from Graph API to a BRT datetime."""
     try:
         dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-        return dt.astimezone(timezone.utc).date()
+        return dt.astimezone(BRT)
     except Exception:
-        return date.today()
+        return datetime.now(BRT)
+
+
+def parse_media_date(timestamp: str) -> date:
+    """Parse ISO 8601 timestamp from Graph API to a Python date (BRT)."""
+    return parse_media_datetime(timestamp).date()
