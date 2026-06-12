@@ -118,9 +118,12 @@ class IGClient:
         """Return extra daily account metrics.
 
         Returns dict with:
-          - alcance_dia: reach for the most recent day
-          - contas_engajadas_28d: accounts engaged in last 28 days
-          - interacoes_totais_28d: total interactions in last 28 days
+          - alcance_dia: reach for the current day
+          - contas_engajadas_28d: accounts engaged today (metric_type=total_value/day)
+          - interacoes_totais_28d: total interactions today (metric_type=total_value/day)
+
+        Note: accounts_engaged and total_interactions only support period=day with
+        metric_type=total_value; period=days_28 returns 400 for these metrics.
 
         All default to 0 on any error (graceful degradation).
         """
@@ -144,13 +147,14 @@ class IGClient:
         except Exception as exc:
             log.warning("get_account_insights_extra reach/day parse error for %s: %s", self._user_id, exc)
 
-        # 28-day aggregates (accounts_engaged + total_interactions)
-        # Requires metric_type=total_value; response uses total_value.value instead of values[]
+        # Daily engagement metrics (period=day + metric_type=total_value).
+        # accounts_engaged and total_interactions do NOT support period=days_28;
+        # using period=day gives today's aggregate via total_value.value.
         tv_data = self._get_safe(
             f"{self._user_id}/insights",
             params={
                 "metric": "accounts_engaged,total_interactions",
-                "period": "days_28",
+                "period": "day",
                 "metric_type": "total_value",
             },
         )
@@ -273,7 +277,7 @@ def _parse_insight_value(item: Dict[str, Any]) -> int:
     values = item.get("values", [])
     if values:
         return int(values[-1].get("value") or 0)
-    tv = item.get("total_value", {})
+    tv = item.get("total_value") or {}
     if isinstance(tv, dict):
         return int(tv.get("value") or 0)
     if isinstance(tv, (int, float)):
