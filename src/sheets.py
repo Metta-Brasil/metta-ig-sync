@@ -3,7 +3,7 @@
 Handles:
 - Service account auth (raw JSON or base64)
 - Sheet auto-creation if missing (addSheet via batchUpdate)
-- profile_upsert: upsert one row per day, keyed by date serial
+- profile_upsert: upsert one row per day, keyed by date serial (last-wins)
 - posts_overwrite: clear + rewrite complete dataset
 """
 
@@ -296,10 +296,13 @@ def profile_upsert(
         else row_dict.get("date")
     )
 
-    # Read all existing values in col A (date serials)
+    # Read all existing values in col A (date serials).
+    # UNFORMATTED_VALUE returns the raw numeric serial (e.g. 46019) instead of the
+    # formatted display string ("12/06/2026"), so the comparison against date_serial works.
     existing = svc.spreadsheets().values().get(
         spreadsheetId=config.SPREADSHEET_ID,
         range=f"{sheet_name}!A:A",
+        valueRenderOption="UNFORMATTED_VALUE",
     ).execute()
     existing_values = existing.get("values", [])
 
@@ -307,12 +310,17 @@ def profile_upsert(
     end_col = _col_letter(len(columns) - 1)
 
     # Search for existing row with matching date serial (skip header at index 0).
+    # Sheets returns floats for date serials (e.g. 46019.0) — coerce to int before comparing.
     # Take the LAST match so it aligns with the dashboard's byDay dedup (also last-wins).
     target_row: Optional[int] = None
     for i, cell_row in enumerate(existing_values):
         if i == 0:
             continue  # skip header
-        if cell_row and str(cell_row[0]) == str(date_serial):
+        try:
+            cell_serial = int(float(cell_row[0])) if cell_row else None
+        except (ValueError, TypeError):
+            continue
+        if cell_serial == date_serial:
             target_row = i + 1  # 1-based sheet row — keep scanning, last match wins
 
     if target_row is not None:
