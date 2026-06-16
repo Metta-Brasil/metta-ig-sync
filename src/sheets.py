@@ -52,7 +52,9 @@ def _to_sheet_value(key: str, v: Any) -> Any:
     """Coerce a value to what Sheets expects for its column type."""
     if v is None:
         return ""
-    if key == "date" and isinstance(v, _date):
+    # Any date-valued cell → Lotus serial (not just the "date" key; demographics
+    # uses "coletado_em"). datetime is a date subclass, covered too.
+    if isinstance(v, _date):
         return _to_sheet_serial(v)
     return v
 
@@ -502,7 +504,15 @@ def rows_overwrite(
     ).execute()
 
     if not rows:
-        log.warning("%s: no rows to write for %s.", label, sheet_name)
+        # Keep the header so the tab stays well-formed (positional readers
+        # expect row 1 = header) even when a collection returns nothing.
+        svc.spreadsheets().values().update(
+            spreadsheetId=config.SPREADSHEET_ID,
+            range=f"{sheet_name}!A1:{end_col}1",
+            valueInputOption="USER_ENTERED",
+            body={"values": [headers]},
+        ).execute()
+        log.warning("%s: no rows to write for %s (kept header only).", label, sheet_name)
         return
 
     data_values = [_row_values(r, columns) for r in rows]
