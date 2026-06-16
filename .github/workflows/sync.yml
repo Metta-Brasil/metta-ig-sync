@@ -8,6 +8,10 @@ on:
       dry_run:
         required: false
         default: 'false'
+      only:
+        description: 'Sync only one account (metta|tiago). Empty = both.'
+        required: false
+        default: ''
 
 jobs:
   sync:
@@ -31,4 +35,5 @@ jobs:
           TIAGO_INSTAGRAM_USER_ID: ${{ secrets.TIAGO_INSTAGRAM_USER_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          SYNC_ONLY: ${{ inputs.only || '' }}
         run: python -m src.main

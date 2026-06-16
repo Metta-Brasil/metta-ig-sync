@@ -16,14 +16,20 @@ ACCOUNTS: List[Dict[str, Any]] = [
         "user_id": os.environ.get("METTA_INSTAGRAM_USER_ID", "17841448769635737"),
         "sheet_profile": "ig_metta_perfil",
         "sheet_posts": "ig_metta_posts",
+        "sheet_demographics": "ig_metta_demograficos",
     },
     {
         "name": "tiago",
         "user_id": os.environ.get("TIAGO_INSTAGRAM_USER_ID", "17841410183183165"),
         "sheet_profile": "ig_tiago_perfil",
         "sheet_posts": "ig_tiago_posts",
+        "sheet_demographics": "ig_tiago_demograficos",
     },
 ]
+
+# Optional account scope: SYNC_ONLY="metta" runs just that account (used to roll
+# out a change to one profile before the other). Empty → all accounts.
+SYNC_ONLY = os.environ.get("SYNC_ONLY", "").strip().lower()
 
 # Profile snapshot columns
 # Colunas F-I são métricas DIÁRIAS da conta (não 28d). Headers G/H corrigidos e
@@ -85,6 +91,20 @@ POSTS_COLUMNS: List[Dict[str, str]] = [
     {"header": "Skip Rate %",            "key": "skip_rate",          "format": "0.00"},
     {"header": "Taxa Engajamento %",     "key": "engagement_rate",    "format": "0.00"},
     {"header": "Hora",                   "key": "hora",               "format": "@"},
+    # Cols Q-R (2026-06): só FEED (IMAGE/CAROUSEL). Reels não suportam essas
+    # métricas por mídia → 0. Dashboard continua lendo A:P sem quebrar.
+    {"header": "Visitas Perfil",         "key": "profile_visits",     "format": "0"},
+    {"header": "Seguidores",             "key": "follows",            "format": "0"},
+]
+
+# Demografia de seguidores (aba ig_*_demograficos, overwrite diário).
+# Uma linha por (dimensao, chave). dimensao ∈ {idade_genero, cidade, pais}.
+# chave de idade_genero é "<faixa>|<genero>" (ex. "25-34|F").
+DEMOGRAPHICS_COLUMNS: List[Dict[str, str]] = [
+    {"header": "Dimensao",    "key": "dimensao",    "format": "@"},
+    {"header": "Chave",       "key": "chave",       "format": "@"},
+    {"header": "Seguidores",  "key": "seguidores",  "format": "0"},
+    {"header": "Coletado Em",  "key": "coletado_em",  "format": "dd/MM/yyyy"},
 ]
 
 RETRY_BASE_SECONDS = 5

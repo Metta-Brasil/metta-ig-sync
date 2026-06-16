@@ -17,6 +17,10 @@ BRT = ZoneInfo("America/Sao_Paulo")
 # Metrics to request per media type
 _COMMON_INSIGHT_METRICS = "views,reach,saved,shares"
 _VIDEO_EXTRA_METRICS = ",likes,comments,reposts,reels_skip_rate"
+# profile_visits/follows are supported ONLY for FEED media (IMAGE/CAROUSEL_ALBUM);
+# requesting them for a Reel returns "(#100) ... does not support ... for this
+# media product type". So they go only on the non-VIDEO branch.
+_FEED_EXTRA_METRICS = ",profile_visits,follows"
 
 
 class IGClient:
@@ -281,6 +285,8 @@ class IGClient:
         metrics = _COMMON_INSIGHT_METRICS
         if media_type == "VIDEO":
             metrics += _VIDEO_EXTRA_METRICS
+        else:
+            metrics += _FEED_EXTRA_METRICS
 
         data = self._get_safe(
             f"{media_id}/insights",
@@ -296,6 +302,8 @@ class IGClient:
             "comments": 0,
             "reposts": 0,
             "skip_rate": 0.0,
+            "profile_visits": 0,
+            "follows": 0,
         }
 
         if not data:
@@ -324,10 +332,69 @@ class IGClient:
                 elif name == "reels_skip_rate":
                     f = float(val or 0)
                     result["skip_rate"] = round(f * 100 if f <= 1.0 else f, 2)
+                elif name == "profile_visits":
+                    result["profile_visits"] = int(val or 0)
+                elif name == "follows":
+                    result["follows"] = int(val or 0)
         except Exception as exc:
             log.warning("get_post_insights parse error for %s: %s", media_id, exc)
 
         return result
+
+    def get_follower_demographics(self) -> List[Dict[str, Any]]:
+        """Return follower demographics rows: age×gender, top cities, top countries.
+
+        Uses the lifetime `follower_demographics` metric with metric_type=total_value
+        and a per-call breakdown. Requires ≥100 followers (both accounts qualify).
+
+        Each returned dict: {dimensao, chave, seguidores}. `chave` for the
+        age×gender cross is "<age>|<gender>" (e.g. "25-34|F"). Never raises —
+        a breakdown that errors just contributes nothing (graceful degradation).
+        """
+        out: List[Dict[str, Any]] = []
+        # (api breakdown value, our dimensao label)
+        plan = [
+            ("age,gender", "idade_genero"),
+            ("city", "cidade"),
+            ("country", "pais"),
+        ]
+        for breakdown, dimensao in plan:
+            data = self._get_safe(
+                f"{self._user_id}/insights",
+                params={
+                    "metric": "follower_demographics",
+                    "period": "lifetime",
+                    "metric_type": "total_value",
+                    "breakdown": breakdown,
+                },
+            )
+            try:
+                items = data.get("data", [])
+                if not items:
+                    log.warning(
+                        "get_follower_demographics: empty for breakdown=%s user=%s",
+                        breakdown, self._user_id,
+                    )
+                    continue
+                tv = items[0].get("total_value") or {}
+                for bd in tv.get("breakdowns", []):
+                    for res in bd.get("results", []):
+                        dims = res.get("dimension_values", [])
+                        chave = "|".join(str(d) for d in dims)
+                        value = res.get("value")
+                        if chave == "" or value is None:
+                            continue
+                        out.append({
+                            "dimensao": dimensao,
+                            "chave": chave,
+                            "seguidores": int(value),
+                        })
+            except Exception as exc:
+                log.warning(
+                    "get_follower_demographics parse error breakdown=%s user=%s: %s",
+                    breakdown, self._user_id, exc,
+                )
+        return out
 
 
 # ------------------------------------------------------------------

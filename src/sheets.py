@@ -476,20 +476,22 @@ def profile_upsert_partial(
         log.info("profile_upsert_partial: appended row %d to %s (day=%s).", next_row, sheet_name, day)
 
 
-def posts_overwrite(
+def rows_overwrite(
     svc,
     sheet_name: str,
     rows: List[Dict[str, Any]],
+    columns: List[Dict[str, str]],
+    label: str = "rows_overwrite",
 ) -> None:
-    """Overwrite all post rows: clear data area then rewrite header + all rows."""
-    columns = config.POSTS_COLUMNS
+    """Generic overwrite: clear the data area then rewrite header + all rows,
+    using the given column spec. Used by posts and demographics."""
     headers = [c["header"] for c in columns]
     sheet_id = ensure_headers(svc, config.SPREADSHEET_ID, sheet_name, headers)
     num_cols = len(columns)
     end_col = _col_letter(num_cols - 1)
 
     if config.DRY_RUN:
-        log.info("[DRY_RUN] posts_overwrite: would write %d rows to %s.", len(rows), sheet_name)
+        log.info("[DRY_RUN] %s: would write %d rows to %s.", label, len(rows), sheet_name)
         return
 
     # Clear everything from row 1 down
@@ -500,7 +502,7 @@ def posts_overwrite(
     ).execute()
 
     if not rows:
-        log.warning("posts_overwrite: no rows to write for %s.", sheet_name)
+        log.warning("%s: no rows to write for %s.", label, sheet_name)
         return
 
     data_values = [_row_values(r, columns) for r in rows]
@@ -521,4 +523,22 @@ def posts_overwrite(
         start_row_zero=1,
         num_data_rows=len(data_values),
     )
-    log.info("posts_overwrite: wrote %d rows to %s.", len(data_values), sheet_name)
+    log.info("%s: wrote %d rows to %s.", label, len(data_values), sheet_name)
+
+
+def posts_overwrite(
+    svc,
+    sheet_name: str,
+    rows: List[Dict[str, Any]],
+) -> None:
+    """Overwrite all post rows: clear data area then rewrite header + all rows."""
+    rows_overwrite(svc, sheet_name, rows, config.POSTS_COLUMNS, label="posts_overwrite")
+
+
+def demographics_overwrite(
+    svc,
+    sheet_name: str,
+    rows: List[Dict[str, Any]],
+) -> None:
+    """Overwrite the follower-demographics tab."""
+    rows_overwrite(svc, sheet_name, rows, config.DEMOGRAPHICS_COLUMNS, label="demographics_overwrite")

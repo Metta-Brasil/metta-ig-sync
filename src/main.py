@@ -22,6 +22,7 @@ from . import config
 from .instagram import BRT, IGClient, parse_media_date, parse_media_datetime
 from .sheets import (
     _build_service,
+    demographics_overwrite,
     posts_overwrite,
     profile_upsert,
     profile_upsert_partial,
@@ -65,6 +66,8 @@ def _build_post_row(media: dict, insights: dict) -> dict:
     reposts = int(insights.get("reposts") or 0)
     views = int(insights.get("views") or 0)
     skip_rate = float(insights.get("skip_rate") or 0.0)
+    profile_visits = int(insights.get("profile_visits") or 0)
+    follows = int(insights.get("follows") or 0)
 
     engagement_num = likes + comments + saved + shares
     engagement_rate = round(engagement_num / reach * 100, 2) if reach > 0 else 0.0
@@ -86,6 +89,8 @@ def _build_post_row(media: dict, insights: dict) -> dict:
         "skip_rate": skip_rate,
         "engagement_rate": engagement_rate,
         "hora": hora,
+        "profile_visits": profile_visits,
+        "follows": follows,
     }
 
 
@@ -177,6 +182,19 @@ def sync_account(svc, account: dict, token: str) -> bool:
         log.error("[%s] Posts write failed: %s", name, exc, exc_info=True)
         return False
 
+    # --- Follower demographics (overwrite daily) ---
+    # Non-fatal: a failure here must not fail the whole account sync.
+    sheet_demographics = account.get("sheet_demographics")
+    if sheet_demographics:
+        try:
+            demo_rows = client.get_follower_demographics()
+            for r in demo_rows:
+                r["coletado_em"] = today
+            demographics_overwrite(svc, sheet_demographics, demo_rows)
+            log.info("[%s] Demographics: %d rows written to %s.", name, len(demo_rows), sheet_demographics)
+        except Exception as exc:
+            log.error("[%s] Demographics sync failed (non-fatal): %s", name, exc, exc_info=True)
+
     log.info("=== Done: %s — %d posts synced ===", name, len(post_rows))
     return True
 
@@ -196,8 +214,16 @@ def main() -> int:
         log.error("Failed to build Google Sheets service: %s", exc, exc_info=True)
         return 1
 
+    accounts = config.ACCOUNTS
+    if config.SYNC_ONLY:
+        accounts = [a for a in accounts if a["name"] == config.SYNC_ONLY]
+        log.info("SYNC_ONLY=%s — syncing %d account(s).", config.SYNC_ONLY, len(accounts))
+        if not accounts:
+            log.error("SYNC_ONLY=%s matched no account.", config.SYNC_ONLY)
+            return 1
+
     any_failed = False
-    for account in config.ACCOUNTS:
+    for account in accounts:
         success = sync_account(svc, account, token)
         if not success:
             any_failed = True
