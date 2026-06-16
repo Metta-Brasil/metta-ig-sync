@@ -26,6 +26,7 @@ from .sheets import (
     posts_overwrite,
     profile_upsert,
     profile_upsert_partial,
+    stories_upsert,
 )
 
 logging.basicConfig(
@@ -91,6 +92,30 @@ def _build_post_row(media: dict, insights: dict) -> dict:
         "hora": hora,
         "profile_visits": profile_visits,
         "follows": follows,
+    }
+
+
+def _build_story_row(story: dict, today: date) -> dict:
+    """Merge a story's fields + insights into a sheet row. `coletado_em` = today."""
+    ts = story.get("timestamp", "")
+    story_date = parse_media_date(ts) if ts else today
+    hora = parse_media_datetime(ts).strftime("%H:%M") if ts else ""
+    return {
+        "story_id": story.get("story_id", ""),
+        "date": story_date,
+        "hora": hora,
+        "media_type": story.get("media_type", ""),
+        "permalink": story.get("permalink", ""),
+        "thumbnail_url": story.get("thumbnail_url", ""),
+        "views": int(story.get("views") or 0),
+        "reach": int(story.get("reach") or 0),
+        "navigation": int(story.get("navigation") or 0),
+        "replies": int(story.get("replies") or 0),
+        "shares": int(story.get("shares") or 0),
+        "total_interactions": int(story.get("total_interactions") or 0),
+        "follows": int(story.get("follows") or 0),
+        "profile_visits": int(story.get("profile_visits") or 0),
+        "coletado_em": today,
     }
 
 
@@ -194,6 +219,18 @@ def sync_account(svc, account: dict, token: str) -> bool:
             log.info("[%s] Demographics: %d rows written to %s.", name, len(demo_rows), sheet_demographics)
         except Exception as exc:
             log.error("[%s] Demographics sync failed (non-fatal): %s", name, exc, exc_info=True)
+
+    # --- Stories (append-only upsert por id; preserva histórico ao expirar) ---
+    # Non-fatal: uma falha aqui não pode derrubar o sync da conta.
+    sheet_stories = account.get("sheet_stories")
+    if sheet_stories:
+        try:
+            stories = client.get_stories()
+            story_rows = [_build_story_row(s, today) for s in stories]
+            stories_upsert(svc, sheet_stories, story_rows)
+            log.info("[%s] Stories: %d ativos upsertados em %s.", name, len(story_rows), sheet_stories)
+        except Exception as exc:
+            log.error("[%s] Stories sync failed (non-fatal): %s", name, exc, exc_info=True)
 
     log.info("=== Done: %s — %d posts synced ===", name, len(post_rows))
     return True

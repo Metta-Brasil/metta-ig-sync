@@ -552,3 +552,88 @@ def demographics_overwrite(
 ) -> None:
     """Overwrite the follower-demographics tab."""
     rows_overwrite(svc, sheet_name, rows, config.DEMOGRAPHICS_COLUMNS, label="demographics_overwrite")
+
+
+def stories_upsert(
+    svc,
+    sheet_name: str,
+    rows: List[Dict[str, Any]],
+) -> None:
+    """Append-only upsert of stories keyed by Story ID (col A).
+
+    NEVER clears the sheet: the API only returns stories alive in the last ~24h,
+    so overwriting would erase the history as stories expire. Existing id →
+    update the row in place (refresh insights while the story is still live);
+    new id → append. So the history accrues from the first collection forward.
+
+    Writes with valueInputOption=RAW so the 17–18 digit Story ID stays TEXT
+    (USER_ENTERED would coerce it to a float and lose precision > 2^53, breaking
+    the id match). Date serials are written as ints → RAW keeps them numeric.
+    """
+    columns = config.STORIES_COLUMNS
+    headers = [c["header"] for c in columns]
+    sheet_id = ensure_headers(svc, config.SPREADSHEET_ID, sheet_name, headers)
+    end_col = _col_letter(len(columns) - 1)
+
+    if not rows:
+        log.info("stories_upsert: no active stories for %s.", sheet_name)
+        return
+
+    # Existing story ids (col A) → 1-based row. Read raw; ids are text.
+    existing = svc.spreadsheets().values().get(
+        spreadsheetId=config.SPREADSHEET_ID,
+        range=f"{sheet_name}!A:A",
+        valueRenderOption="UNFORMATTED_VALUE",
+    ).execute()
+    existing_values = existing.get("values", [])
+    id_to_row: Dict[str, int] = {}
+    for i, cell in enumerate(existing_values):
+        if i == 0:
+            continue  # header
+        if cell and cell[0] not in (None, ""):
+            id_to_row[str(cell[0])] = i + 1  # last-wins
+    next_row = len(existing_values) + 1
+
+    updates: List[Tuple[int, List[Any]]] = []
+    appends: List[List[Any]] = []
+    for r in rows:
+        sid = str(r.get("story_id", ""))
+        if not sid:
+            continue
+        vals = _row_values(r, columns)
+        if sid in id_to_row:
+            updates.append((id_to_row[sid], vals))
+        else:
+            appends.append(vals)
+
+    if config.DRY_RUN:
+        log.info("[DRY_RUN] stories_upsert %s: %d update, %d append.",
+                 sheet_name, len(updates), len(appends))
+        return
+
+    for row, vals in updates:
+        svc.spreadsheets().values().update(
+            spreadsheetId=config.SPREADSHEET_ID,
+            range=f"{sheet_name}!A{row}:{end_col}{row}",
+            valueInputOption="RAW",
+            body={"values": [vals]},
+        ).execute()
+
+    if appends:
+        start = next_row
+        end_row = next_row + len(appends) - 1
+        svc.spreadsheets().values().update(
+            spreadsheetId=config.SPREADSHEET_ID,
+            range=f"{sheet_name}!A{start}:{end_col}{end_row}",
+            valueInputOption="RAW",
+            body={"values": appends},
+        ).execute()
+        _apply_column_formats(
+            svc, config.SPREADSHEET_ID, sheet_id,
+            columns=columns,
+            start_row_zero=start - 1,
+            num_data_rows=len(appends),
+        )
+
+    log.info("stories_upsert: %s — %d updated, %d appended.",
+             sheet_name, len(updates), len(appends))

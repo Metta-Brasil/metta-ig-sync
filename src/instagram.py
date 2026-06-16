@@ -396,6 +396,63 @@ class IGClient:
                 )
         return out
 
+    def get_stories(self) -> List[Dict[str, Any]]:
+        """Return currently-active stories (~last 24h) with per-story insights.
+
+        The /stories edge only returns stories still LIVE; expired stories are
+        gone from the API (there is no history/backfill). The caller upserts by
+        story id into an append-only sheet, so the history accrues from the
+        first collection forward. The hourly sync catches each story ~24x.
+
+        Never raises — [] on error; a per-story insight failure → zeros.
+        """
+        data = self._get_safe(
+            f"{self._user_id}/stories",
+            params={
+                "fields": "id,media_type,timestamp,permalink,thumbnail_url,media_url"
+            },
+        )
+        items = data.get("data", []) if data else []
+        out: List[Dict[str, Any]] = []
+        for st in items:
+            story_id = st.get("id", "")
+            if not story_id:
+                continue
+            insights = self._get_story_insights(story_id)
+            out.append({
+                "story_id": story_id,
+                "media_type": st.get("media_type", ""),
+                "timestamp": st.get("timestamp", ""),
+                "permalink": st.get("permalink", ""),
+                "thumbnail_url": st.get("thumbnail_url") or st.get("media_url") or "",
+                **insights,
+            })
+        return out
+
+    def _get_story_insights(self, story_id: str) -> Dict[str, int]:
+        """Per-story insights. All metrics default to 0 on any error."""
+        keys = (
+            "reach", "replies", "shares", "total_interactions",
+            "follows", "profile_visits", "navigation", "views",
+        )
+        result: Dict[str, int] = {k: 0 for k in keys}
+        data = self._get_safe(
+            f"{story_id}/insights",
+            params={"metric": ",".join(keys)},
+        )
+        if not data:
+            return result
+        try:
+            for item in data.get("data", []):
+                name = item.get("name", "")
+                values = item.get("values", [])
+                val = values[0].get("value", 0) if values else item.get("value", 0)
+                if name in result:
+                    result[name] = int(val or 0)
+        except Exception as exc:
+            log.warning("_get_story_insights parse error for %s: %s", story_id, exc)
+        return result
+
 
 # ------------------------------------------------------------------
 # Helpers

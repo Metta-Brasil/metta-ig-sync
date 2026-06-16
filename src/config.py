@@ -17,6 +17,7 @@ ACCOUNTS: List[Dict[str, Any]] = [
         "sheet_profile": "ig_metta_perfil",
         "sheet_posts": "ig_metta_posts",
         "sheet_demographics": "ig_metta_demograficos",
+        "sheet_stories": "ig_metta_stories",
     },
     {
         "name": "tiago",
@@ -24,6 +25,7 @@ ACCOUNTS: List[Dict[str, Any]] = [
         "sheet_profile": "ig_tiago_perfil",
         "sheet_posts": "ig_tiago_posts",
         "sheet_demographics": "ig_tiago_demograficos",
+        "sheet_stories": "ig_tiago_stories",
     },
 ]
 
@@ -105,6 +107,30 @@ DEMOGRAPHICS_COLUMNS: List[Dict[str, str]] = [
     {"header": "Chave",       "key": "chave",       "format": "@"},
     {"header": "Seguidores",  "key": "seguidores",  "format": "0"},
     {"header": "Coletado Em",  "key": "coletado_em",  "format": "dd/MM/yyyy"},
+]
+
+# Stories (aba ig_*_stories). APPEND-ONLY / UPSERT por Story ID — NUNCA limpa a
+# aba: a API só devolve stories ativos (~24h), então sobrescrever perderia o
+# histórico ao expirar. O sync horário pega cada story ~24x na janela; o upsert
+# atualiza os insights enquanto o story está vivo e mantém a linha pra sempre.
+# Retroativo não existe (stories expirados somem da API) — histórico começa na
+# 1ª coleta.
+STORIES_COLUMNS: List[Dict[str, str]] = [
+    {"header": "Story ID",            "key": "story_id",            "format": "@"},
+    {"header": "Data",                "key": "date",                "format": "dd/MM/yyyy"},
+    {"header": "Hora",                "key": "hora",                "format": "@"},
+    {"header": "Tipo",                "key": "media_type",          "format": "@"},
+    {"header": "Permalink",           "key": "permalink",           "format": "@"},
+    {"header": "Thumbnail URL",       "key": "thumbnail_url",       "format": "@"},
+    {"header": "Views",               "key": "views",               "format": "0"},
+    {"header": "Alcance",             "key": "reach",               "format": "0"},
+    {"header": "Navegacao",           "key": "navigation",          "format": "0"},
+    {"header": "Respostas",           "key": "replies",             "format": "0"},
+    {"header": "Compartilhamentos",   "key": "shares",              "format": "0"},
+    {"header": "Interacoes",          "key": "total_interactions",  "format": "0"},
+    {"header": "Seguidores",          "key": "follows",             "format": "0"},
+    {"header": "Visitas Perfil",      "key": "profile_visits",      "format": "0"},
+    {"header": "Coletado Em",         "key": "coletado_em",         "format": "dd/MM/yyyy"},
 ]
 
 RETRY_BASE_SECONDS = 5
