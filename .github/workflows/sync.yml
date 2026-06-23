@@ -2,7 +2,7 @@ name: IG Sync
 
 on:
   schedule:
-    - cron: '0 * * * *'   # toda hora
+    - cron: '0 */8 * * *'   # 3x ao dia (a cada 8h UTC)
   workflow_dispatch:
     inputs:
       dry_run:
