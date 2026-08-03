@@ -10,6 +10,26 @@ IG_BASE_URL = "https://graph.facebook.com/v23.0"
 
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
 
+# Profundidade da coleta de posts.
+#
+# IG_MAX_POSTS: quantos posts (metadados) buscar por conta. Barato — a
+# listagem pagina de 100 em 100, entao 600 posts custam 6 chamadas.
+# Precisa cobrir o historico porque a pagina TP Distribuicao casa
+# impulsionamento com o post original pela legenda: post fora da janela
+# = impulsionamento sem visitas/seguidores.
+#
+# IG_INSIGHTS_FRESH: dos mais recentes, quantos tem insight RE-BUSCADO a
+# cada execucao. Post novo ainda acumula metrica; post antigo nao muda.
+#
+# IG_INSIGHTS_BACKFILL: teto de posts ANTIGOS sem insight na planilha que
+# recebem busca por execucao. Serve pra encher o historico aos poucos sem
+# estourar o rate limit da API de Insights (~200 chamadas/hora). Depois de
+# preenchido, o valor e reaproveitado da propria planilha e o custo volta
+# ao patamar de hoje.
+IG_MAX_POSTS = int(os.environ.get("IG_MAX_POSTS", "600"))
+IG_INSIGHTS_FRESH = int(os.environ.get("IG_INSIGHTS_FRESH", "100"))
+IG_INSIGHTS_BACKFILL = int(os.environ.get("IG_INSIGHTS_BACKFILL", "40"))
+
 ACCOUNTS: List[Dict[str, Any]] = [
     {
         "name": "metta",

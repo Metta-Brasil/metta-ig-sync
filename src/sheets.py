@@ -536,6 +536,38 @@ def rows_overwrite(
     log.info("%s: wrote %d rows to %s.", label, len(data_values), sheet_name)
 
 
+def posts_read_existing(svc, sheet_name: str) -> Dict[str, Dict[str, Any]]:
+    """Le as linhas de posts ja gravadas, indexadas por Post ID.
+
+    Serve pro sync nao re-buscar insight de post antigo: metrica de post
+    velho nao muda, e a API de Insights tem limite baixo. Retorna {} em
+    qualquer falha — quem chama trata como "nada em cache" e busca.
+    """
+    cols = config.POSTS_COLUMNS
+    end = _col_letter(len(cols) - 1)
+    try:
+        resp = (
+            svc.spreadsheets()
+            .values()
+            .get(spreadsheetId=config.SPREADSHEET_ID,
+                 range=f"'{sheet_name}'!A2:{end}")
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001 — cache e opcional
+        log.warning("posts_read_existing falhou em %s (%s); seguindo sem cache",
+                    sheet_name, exc)
+        return {}
+
+    keys = [c["key"] for c in cols]
+    out: Dict[str, Dict[str, Any]] = {}
+    for values in resp.get("values", []) or []:
+        row = {k: (values[i] if i < len(values) else "") for i, k in enumerate(keys)}
+        pid = str(row.get("post_id") or "").strip()
+        if pid:
+            out[pid] = row
+    return out
+
+
 def posts_overwrite(
     svc,
     sheet_name: str,

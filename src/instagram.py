@@ -242,7 +242,7 @@ class IGClient:
 
         return result
 
-    def get_media_list(self, max_posts: int = 100) -> List[Dict[str, Any]]:
+    def get_media_list(self, max_posts: int = config.IG_MAX_POSTS) -> List[Dict[str, Any]]:
         """Return up to max_posts media items with basic fields, newest first."""
         fields = (
             "id,timestamp,media_type,caption,permalink,"
