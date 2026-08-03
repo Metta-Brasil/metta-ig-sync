@@ -136,7 +136,10 @@ BOOSTED_HIST_COLUMNS: List[Dict[str, str]] = [
     {"header": "Seguidores",     "key": "follows",        "format": "0"},
     {"header": "Alcance",        "key": "reach",          "format": "0"},
     {"header": "Views",          "key": "views",          "format": "0"},
-    {"header": "Atualizado",     "key": "atualizado",     "format": "@"},
+    # HH:mm, não "@": o Sheets converte "22:50" em fração do dia (0,95138)
+    # na entrada, e com a coluna formatada como texto era a fração que
+    # aparecia. Como hora, o mesmo valor exibe 22:50.
+    {"header": "Atualizado",     "key": "atualizado",     "format": "HH:mm"},
 ]
 
 # Token com ads_read pra descobrir os impulsionamentos sozinho. Sem ele o sync
