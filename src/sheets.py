@@ -643,6 +643,35 @@ def stories_upsert(
 # Impulsionamentos
 # ---------------------------------------------------------------------------
 
+def _date_key(v: Any) -> str:
+    """Chave de data comparável, venha ela como serial ou como dd/MM/yyyy.
+
+    O serial é o que a API devolve com UNFORMATTED_VALUE, mas uma linha
+    editada à mão pode voltar como texto — normalizar os dois evita que uma
+    edição na planilha faça a linha duplicar na execução seguinte.
+    """
+    if isinstance(v, (int, float)):
+        return str(int(v))
+    txt = str(v).strip()
+    if not txt:
+        return ""
+    try:
+        return str(int(float(txt.replace(",", "."))))
+    except ValueError:
+        pass
+    for sep in ("/", "-"):
+        parts = txt.split(sep)
+        if len(parts) == 3:
+            try:
+                d, m, y = (int(parts[0]), int(parts[1]), int(parts[2]))
+                if y < 100:
+                    y += 2000
+                return str(_to_sheet_serial(_date(y, m, d)))
+            except ValueError:
+                break
+    return txt
+
+
 def boosted_input_read(svc) -> List[Dict[str, str]]:
     """Lê a aba de entrada dos impulsionamentos. [] se ela ainda não existe.
 
@@ -703,23 +732,25 @@ def boosted_hist_upsert(svc, rows: List[Dict[str, Any]]) -> None:
     end = _col_letter(len(cols) - 1)
     sheet_id = ensure_headers(svc, config.SPREADSHEET_ID, name, headers)
 
+    # UNFORMATTED_VALUE é obrigatório: no modo padrão a API devolve a data já
+    # formatada ("02/08/2026") e a comparação contra o serial de
+    # _to_sheet_serial nunca casa — todo upsert viraria append e a aba
+    # duplicaria a cada execução.
     existing = svc.spreadsheets().values().get(
         spreadsheetId=config.SPREADSHEET_ID,
         range=f"{name}!A2:B",
+        valueRenderOption="UNFORMATTED_VALUE",
     ).execute().get("values", [])
 
-    # A planilha devolve a data como serial (número) porque a coluna é
-    # formatada como data. _to_sheet_serial converte no mesmo sentido, então
-    # as duas pontas da chave falam a mesma língua.
     index: Dict[Tuple[str, str], int] = {}
     for i, raw in enumerate(existing):
         padded = list(raw) + ["", ""]
-        index[(str(padded[0]).strip(), str(padded[1]).strip())] = i + 2
+        index[(_date_key(padded[0]), str(padded[1]).strip())] = i + 2
 
     updates: List[Dict[str, Any]] = []
     appends: List[List[Any]] = []
     for r in rows:
-        key = (str(_to_sheet_serial(r["data"])), str(r["media_id"]))
+        key = (_date_key(_to_sheet_serial(r["data"])), str(r["media_id"]))
         vals = _row_values(r, cols)
         row_num = index.get(key)
         if row_num:
