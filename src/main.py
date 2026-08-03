@@ -17,7 +17,6 @@ import logging
 import os
 import sys
 from datetime import date, datetime, timedelta
-from typing import Optional
 
 from . import config
 from .instagram import BRT, IGClient, parse_media_date, parse_media_datetime
@@ -25,7 +24,6 @@ from .sheets import (
     _build_service,
     demographics_overwrite,
     posts_overwrite,
-    posts_read_existing,
     profile_upsert,
     profile_upsert_partial,
     stories_upsert,
@@ -37,36 +35,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
 log = logging.getLogger(__name__)
-
-
-def _insights_from_cached_row(row: Optional[dict]) -> dict:
-    """Reconstroi o dict de insights a partir de uma linha ja gravada.
-
-    Vazio quando nao ha linha em cache — o _build_post_row trata ausencia
-    com os defaults de sempre (0), igual ao comportamento anterior.
-    """
-    if not row:
-        return {}
-
-    def _num(key: str, cast):
-        raw = str(row.get(key) or "").strip().replace(".", "").replace(",", ".")
-        try:
-            return cast(float(raw)) if raw else 0
-        except (TypeError, ValueError):
-            return 0
-
-    return {
-        "likes": _num("likes", int),
-        "comments": _num("comments", int),
-        "views": _num("views", int),
-        "reach": _num("reach", int),
-        "saved": _num("saved", int),
-        "shares": _num("shares", int),
-        "reposts": _num("reposts", int),
-        "skip_rate": _num("skip_rate", float),
-        "profile_visits": _num("profile_visits", int),
-        "follows": _num("follows", int),
-    }
 
 
 def _build_post_row(media: dict, insights: dict) -> dict:
@@ -215,54 +183,23 @@ def sync_account(svc, account: dict, token: str) -> bool:
 
     # --- Posts ---
     try:
-        media_list = client.get_media_list(max_posts=config.IG_MAX_POSTS)
+        media_list = client.get_media_list(max_posts=100)
         log.info("[%s] Fetched %d media items.", name, len(media_list))
     except Exception as exc:
         log.error("[%s] Media list fetch failed: %s", name, exc, exc_info=True)
         return False
 
-    # Insight de post antigo nao muda, e a API de Insights tem limite baixo
-    # (~200 chamadas/hora). Entao: re-busca so os IG_INSIGHTS_FRESH mais
-    # recentes; para os demais, reaproveita o que ja esta na planilha e
-    # busca no maximo IG_INSIGHTS_BACKFILL por execucao, enchendo o
-    # historico aos poucos. Sem isso, aumentar a profundidade de posts
-    # multiplicaria as chamadas por execucao e estouraria o limite.
-    cached = posts_read_existing(svc, sheet_posts)
-    log.info("[%s] Cache de insights: %d posts ja na planilha.", name, len(cached))
-
     post_rows = []
-    backfilled = 0
-    reused = 0
     for i, media in enumerate(media_list, start=1):
         media_id = media.get("id", "")
         media_type = media.get("media_type", "")
-        prev = cached.get(str(media_id))
 
-        if i <= config.IG_INSIGHTS_FRESH:
-            fetch = True                      # recente: sempre atualiza
-        elif prev is not None:
-            fetch = False                     # antigo ja coletado: reusa
-        elif backfilled < config.IG_INSIGHTS_BACKFILL:
-            fetch = True                      # antigo inedito: backfill
-            backfilled += 1
-        else:
-            fetch = False                     # teto do backfill nesta rodada
+        if i % 10 == 0 or i == 1:
+            log.info("[%s] Fetching insights: %d/%d (post_id=%s)", name, i, len(media_list), media_id)
 
-        if fetch:
-            if i % 10 == 0 or i == 1:
-                log.info("[%s] Fetching insights: %d/%d (post_id=%s)",
-                         name, i, len(media_list), media_id)
-            insights = client.get_post_insights(media_id, media_type)
-        else:
-            insights = _insights_from_cached_row(prev)
-            if prev is not None:
-                reused += 1
-
+        insights = client.get_post_insights(media_id, media_type)
         row = _build_post_row(media, insights)
         post_rows.append(row)
-
-    log.info("[%s] Insights: %d re-buscados, %d reaproveitados, %d de backfill.",
-             name, min(len(media_list), config.IG_INSIGHTS_FRESH), reused, backfilled)
 
     try:
         posts_overwrite(svc, sheet_posts, post_rows)
