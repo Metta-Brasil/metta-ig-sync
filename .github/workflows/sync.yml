@@ -2,7 +2,13 @@ name: IG Sync
 
 on:
   schedule:
-    - cron: '23 */4 * * *'   # a cada 4h, minuto :23 off-peak (6x ao dia, UTC)
+    # 4x ao dia, horários em UTC. A última (02:50 UTC) é 23:50 de Brasília:
+    # é ela que fecha o dia na aba de impulsionamentos, e o código carimba a
+    # linha com a data BRT, não a UTC — sem isso o "fechamento" cairia às 21h
+    # e todo dia perderia as últimas 3 horas.
+    #   09:00 UTC = 06:00 BRT   |   15:00 UTC = 12:00 BRT
+    #   21:00 UTC = 18:00 BRT   |   02:50 UTC = 23:50 BRT (fechamento)
+    - cron: '50 2,9,15,21 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -34,6 +40,7 @@ jobs:
           METTA_INSTAGRAM_USER_ID: ${{ secrets.METTA_INSTAGRAM_USER_ID }}
           TIAGO_INSTAGRAM_USER_ID: ${{ secrets.TIAGO_INSTAGRAM_USER_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          META_ADS_ACCESS_TOKEN: ${{ secrets.META_ADS_ACCESS_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
           SYNC_ONLY: ${{ inputs.only || '' }}
         run: python -m src.main

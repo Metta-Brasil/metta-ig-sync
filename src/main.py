@@ -11,6 +11,8 @@ Optional:
     DRY_RUN=true                 — skip all writes to Google Sheets
     METTA_INSTAGRAM_USER_ID      — override default Metta IG user ID
     TIAGO_INSTAGRAM_USER_ID      — override default Tiago IG user ID
+    META_ADS_ACCESS_TOKEN        — token com ads_read; descobre os posts
+                                   impulsionados sem ninguém digitar link
 """
 
 import logging
@@ -18,10 +20,13 @@ import os
 import sys
 from datetime import date, datetime, timedelta
 
-from . import config
+from . import boosted, config
 from .instagram import BRT, IGClient, parse_media_date, parse_media_datetime
 from .sheets import (
     _build_service,
+    boosted_hist_upsert,
+    boosted_input_read,
+    boosted_input_write,
     demographics_overwrite,
     posts_overwrite,
     profile_upsert,
@@ -236,6 +241,98 @@ def sync_account(svc, account: dict, token: str) -> bool:
     return True
 
 
+def sync_boosted(svc, token: str) -> bool:
+    """Série diária de visitas/seguidores dos posts impulsionados.
+
+    Roda uma vez por execução, não por conta: a lista é comum às duas e um
+    media_id só é visível pelo token da conta dona, então cada post é
+    tentado em cada conta até uma responder.
+
+    Retorna False só em erro inesperado — post que não resolve ou que a API
+    não cobre (Reels) é registrado e segue o baile.
+    """
+    log.info("=== Impulsionamentos ===")
+
+    clients = {a["name"]: IGClient(token, a["user_id"]) for a in config.ACCOUNTS}
+    entrada = boosted_input_read(svc)
+
+    # media_id conhecido → o que a planilha já sabe daquele post
+    conhecidos: dict = {}
+    pendentes: dict = {}  # shortcode → link, ainda sem media_id
+    for row in entrada:
+        if row["media_id"]:
+            conhecidos[row["media_id"]] = row
+        else:
+            sc = boosted.extract_shortcode(row["link"])
+            if sc:
+                pendentes[sc] = row["link"]
+            else:
+                log.warning("Impulsionados: linha ignorada, link inválido: %r", row["link"])
+
+    for mid in boosted.discover_from_ads(config.META_ADS_ACCESS_TOKEN):
+        conhecidos.setdefault(mid, {"media_id": mid, "link": "", "origem": "meta_ads"})
+
+    # Resolve os links colados que ainda não têm media_id, em cada conta
+    if pendentes:
+        for nome, client in clients.items():
+            if not pendentes:
+                break
+            achados = boosted.resolve_shortcodes(client, list(pendentes))
+            for sc, mid in achados.items():
+                conhecidos.setdefault(mid, {
+                    "media_id": mid, "link": pendentes.pop(sc), "origem": "manual",
+                })
+    for sc, link in pendentes.items():
+        log.warning("Impulsionados: não achei o post do link %s (post muito antigo?).", link)
+
+    if not conhecidos:
+        log.info("Impulsionados: nenhum post na lista, nada a coletar.")
+        return True
+
+    dia = datetime.now(BRT).date()
+    agora = boosted.now_brt_hhmm()
+    hist_rows: list = []
+    input_rows: list = []
+
+    for mid, meta in conhecidos.items():
+        dados = None
+        conta = ""
+        for nome, client in clients.items():
+            dados = boosted.collect(client, mid)
+            if dados:
+                conta = nome
+                break
+
+        if not dados:
+            # Post de conta fora do grupo, apagado, ou token sem acesso.
+            log.warning("Impulsionados: media %s não visível por nenhuma conta.", mid)
+            input_rows.append({
+                "link": meta.get("link", ""), "media_id": mid, "conta": "",
+                "tipo": "", "tem_dado": "nao (post inacessivel)",
+                "origem": meta.get("origem", "manual"),
+            })
+            continue
+
+        tem = dados["tipo"] == "FEED"
+        input_rows.append({
+            "link": dados["link"], "media_id": mid, "conta": conta,
+            "tipo": dados["tipo"],
+            "tem_dado": "sim" if tem else f"nao ({dados['tipo'].lower()})",
+            "origem": meta.get("origem", "manual"),
+        })
+        hist_rows.extend(boosted.build_rows([dados], conta, dia, agora))
+
+    com_dado = sum(1 for r in input_rows if r["tem_dado"] == "sim")
+    log.info(
+        "Impulsionados: %d post(s), %d com visitas/seguidores disponíveis.",
+        len(input_rows), com_dado,
+    )
+
+    boosted_input_write(svc, input_rows)
+    boosted_hist_upsert(svc, hist_rows)
+    return True
+
+
 def main() -> int:
     token = os.environ.get("INSTAGRAM_ACCESS_TOKEN", "")
     if not token:
@@ -264,6 +361,13 @@ def main() -> int:
         success = sync_account(svc, account, token)
         if not success:
             any_failed = True
+
+    try:
+        sync_boosted(svc, token)
+    except Exception as exc:
+        # Coleta nova e isolada: não derruba o sync das abas que já rodavam.
+        log.error("Impulsionados falhou: %s", exc, exc_info=True)
+        any_failed = True
 
     if any_failed:
         log.error("One or more accounts failed to sync.")

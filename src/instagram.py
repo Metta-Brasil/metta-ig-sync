@@ -1,6 +1,7 @@
 """Instagram Graph API client for metta-ig-sync."""
 
 import logging
+import re
 import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -13,6 +14,15 @@ from . import config
 log = logging.getLogger(__name__)
 
 BRT = ZoneInfo("America/Sao_Paulo")
+
+# requests coloca a URL inteira na mensagem da exceção, e a URL leva o
+# access_token. O GitHub mascara secrets no log do Actions, mas execução local
+# e qualquer log agregado não mascaram — então o token sai daqui redigido.
+_TOKEN_RE = re.compile(r"access_token=[^&\s]+")
+
+
+def _redact(msg: Any) -> str:
+    return _TOKEN_RE.sub("access_token=REDACTED", str(msg))
 
 # Metrics to request per media type
 _COMMON_INSIGHT_METRICS = "views,reach,saved,shares"
@@ -64,7 +74,7 @@ class IGClient:
                 wait = config.RETRY_BASE_SECONDS * (2 ** (attempt - 1))
                 log.warning(
                     "Request error for %s (attempt %d/%d): %s, retrying in %ds",
-                    path, attempt, config.RETRY_MAX_ATTEMPTS, exc, wait,
+                    path, attempt, config.RETRY_MAX_ATTEMPTS, _redact(exc), wait,
                 )
                 time.sleep(wait)
 
@@ -273,6 +283,82 @@ class IGClient:
                 break
 
         return collected[:max_posts]
+
+    def iter_media(self, max_items: int = 600):
+        """Itera as mídias da conta, mais recentes primeiro, paginando sob demanda.
+
+        get_media_list baixa tudo antes de devolver. Aqui o consumidor pode
+        parar no meio — usado pra achar um permalink específico sem varrer o
+        perfil inteiro.
+        """
+        params: Dict[str, Any] = {"fields": "id,permalink", "limit": 100}
+        path = f"{self._user_id}/media"
+        seen = 0
+        while seen < max_items:
+            data = self._get_safe(path, params)
+            items = data.get("data", [])
+            if not items:
+                return
+            for it in items:
+                yield it
+                seen += 1
+                if seen >= max_items:
+                    return
+            after = (data.get("paging", {}).get("cursors", {}) or {}).get("after")
+            if not after or not data.get("paging", {}).get("next"):
+                return
+            params["after"] = after
+
+    def get_media_meta(self, media_id: str) -> Dict[str, Any]:
+        """Metadados de uma mídia por ID. {} se a mídia não é desta conta.
+
+        Uma tentativa só, sem retry: um media_id vindo do Meta Ads pode ser
+        da outra conta do grupo, e aí o 400 é a RESPOSTA esperada, não uma
+        falha transitória. Com o backoff normal (5+10+20+40s) cada post de
+        outra conta custaria 75s e a coleta não terminaria.
+        """
+        url = f"{config.IG_BASE_URL}/{media_id}"
+        try:
+            resp = self._session.get(url, params={
+                "access_token": self._token,
+                "fields": "permalink,caption,media_type,media_product_type,timestamp",
+            }, timeout=30)
+            if not resp.ok:
+                return {}
+            data = resp.json()
+            return {} if "error" in data else data
+        except Exception as exc:
+            log.warning("get_media_meta %s: %s", media_id, _redact(exc))
+            return {}
+
+    def get_boost_insights(self, media_id: str, media_product_type: str) -> Dict[str, Any]:
+        """Visitas ao perfil e seguidores de um post, mais alcance e views.
+
+        profile_visits/follows só existem para FEED. Para REELS a API responde
+        "(#100) does not support ... for this media product type", então nem
+        são pedidos: pedir junto derrubaria a chamada inteira e a gente
+        perderia alcance e views também.
+
+        Ausência é gravada como string vazia, não zero — a planilha precisa
+        distinguir "a API não fornece" de "rendeu zero seguidor".
+        """
+        tem_perfil = media_product_type == "FEED"
+        metrics = "views,reach" + (",profile_visits,follows" if tem_perfil else "")
+
+        data = self._get_safe(f"{media_id}/insights", params={"metric": metrics})
+        vals = {}
+        for item in data.get("data", []):
+            try:
+                vals[item["name"]] = int(item["values"][0]["value"] or 0)
+            except Exception:
+                continue
+
+        return {
+            "views": vals.get("views", ""),
+            "reach": vals.get("reach", ""),
+            "profile_visits": vals.get("profile_visits", "") if tem_perfil else "",
+            "follows": vals.get("follows", "") if tem_perfil else "",
+        }
 
     def get_post_insights(
         self, media_id: str, media_type: str

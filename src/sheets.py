@@ -637,3 +637,123 @@ def stories_upsert(
 
     log.info("stories_upsert: %s — %d updated, %d appended.",
              sheet_name, len(updates), len(appends))
+
+
+# ---------------------------------------------------------------------------
+# Impulsionamentos
+# ---------------------------------------------------------------------------
+
+def boosted_input_read(svc) -> List[Dict[str, str]]:
+    """Lê a aba de entrada dos impulsionamentos. [] se ela ainda não existe.
+
+    Falha em silêncio de propósito: a aba é opcional, e não poder lê-la não
+    pode derrubar o sync das outras coletas.
+    """
+    name = config.BOOSTED_INPUT_SHEET
+    cols = config.BOOSTED_INPUT_COLUMNS
+    end = _col_letter(len(cols) - 1)
+    try:
+        resp = svc.spreadsheets().values().get(
+            spreadsheetId=config.SPREADSHEET_ID,
+            range=f"{name}!A2:{end}",
+        ).execute()
+    except Exception as exc:
+        log.warning("boosted_input_read: não consegui ler %s: %s", name, exc)
+        return []
+
+    out: List[Dict[str, str]] = []
+    for raw in resp.get("values", []):
+        padded = list(raw) + [""] * (len(cols) - len(raw))
+        row = {c["key"]: str(padded[i]).strip() for i, c in enumerate(cols)}
+        if row["link"] or row["media_id"]:
+            out.append(row)
+    log.info("boosted_input_read: %d linha(s) em %s.", len(out), name)
+    return out
+
+
+def boosted_input_write(svc, rows: List[Dict[str, Any]]) -> None:
+    """Reescreve a aba de entrada com a lista consolidada.
+
+    Sobrescrever é seguro aqui porque a lista escrita é a UNIÃO do que estava
+    lá com o que a descoberta achou — nada que o usuário colou se perde.
+    """
+    rows_overwrite(
+        svc, config.BOOSTED_INPUT_SHEET, rows,
+        config.BOOSTED_INPUT_COLUMNS, label="boosted_input_write",
+    )
+
+
+def boosted_hist_upsert(svc, rows: List[Dict[str, Any]]) -> None:
+    """Grava o histórico com uma linha por (data, media_id).
+
+    Execução do mesmo dia atualiza a linha do dia em vez de empilhar outra —
+    é o que faz o último valor do dia ser o fechamento dele. Virou a data,
+    a chave muda e a linha nova é apensada.
+
+    NUNCA limpa a aba: o histórico é a única fonte da série diária e não pode
+    ser reconstruído a partir da API.
+    """
+    if not rows:
+        log.info("boosted_hist_upsert: nada a gravar.")
+        return
+
+    name = config.BOOSTED_HIST_SHEET
+    cols = config.BOOSTED_HIST_COLUMNS
+    headers = [c["header"] for c in cols]
+    end = _col_letter(len(cols) - 1)
+    sheet_id = ensure_headers(svc, config.SPREADSHEET_ID, name, headers)
+
+    existing = svc.spreadsheets().values().get(
+        spreadsheetId=config.SPREADSHEET_ID,
+        range=f"{name}!A2:B",
+    ).execute().get("values", [])
+
+    # A planilha devolve a data como serial (número) porque a coluna é
+    # formatada como data. _to_sheet_serial converte no mesmo sentido, então
+    # as duas pontas da chave falam a mesma língua.
+    index: Dict[Tuple[str, str], int] = {}
+    for i, raw in enumerate(existing):
+        padded = list(raw) + ["", ""]
+        index[(str(padded[0]).strip(), str(padded[1]).strip())] = i + 2
+
+    updates: List[Dict[str, Any]] = []
+    appends: List[List[Any]] = []
+    for r in rows:
+        key = (str(_to_sheet_serial(r["data"])), str(r["media_id"]))
+        vals = _row_values(r, cols)
+        row_num = index.get(key)
+        if row_num:
+            updates.append({"range": f"{name}!A{row_num}:{end}{row_num}", "values": [vals]})
+        else:
+            appends.append(vals)
+
+    if config.DRY_RUN:
+        log.info(
+            "[DRY_RUN] boosted_hist_upsert: %d update, %d append em %s.",
+            len(updates), len(appends), name,
+        )
+        return
+
+    if updates:
+        svc.spreadsheets().values().batchUpdate(
+            spreadsheetId=config.SPREADSHEET_ID,
+            body={"valueInputOption": "USER_ENTERED", "data": updates},
+        ).execute()
+
+    if appends:
+        first = len(existing) + 2
+        svc.spreadsheets().values().update(
+            spreadsheetId=config.SPREADSHEET_ID,
+            range=f"{name}!A{first}:{end}{first + len(appends) - 1}",
+            valueInputOption="USER_ENTERED",
+            body={"values": appends},
+        ).execute()
+        _apply_column_formats(
+            svc, config.SPREADSHEET_ID, sheet_id,
+            columns=cols, start_row_zero=first - 1, num_data_rows=len(appends),
+        )
+
+    log.info(
+        "boosted_hist_upsert: %d atualizada(s), %d nova(s) em %s.",
+        len(updates), len(appends), name,
+    )

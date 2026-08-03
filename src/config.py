@@ -99,6 +99,50 @@ POSTS_COLUMNS: List[Dict[str, str]] = [
     {"header": "Seguidores",             "key": "follows",            "format": "0"},
 ]
 
+# ---------------------------------------------------------------------------
+# Impulsionamentos (posts turbinados)
+# ---------------------------------------------------------------------------
+# Duas abas, uma compartilhada pelas duas contas:
+#
+#   ig_impulsionados      entrada. Coluna A é sua: cole o link do post que
+#                         está sendo impulsionado. As outras o sync preenche.
+#                         Também é preenchida sozinha via Meta Ads, então na
+#                         prática só precisa mexer aqui pra forçar um post que
+#                         a descoberta não pegou.
+#
+#   ig_impulsionados_hist saída. Uma linha por (dia, post), atualizada durante
+#                         o dia. O ganho de um dia é a diferença entre o
+#                         fechamento dele e o do dia anterior.
+BOOSTED_INPUT_SHEET = "ig_impulsionados"
+BOOSTED_HIST_SHEET = "ig_impulsionados_hist"
+
+BOOSTED_INPUT_COLUMNS: List[Dict[str, str]] = [
+    {"header": "Link",          "key": "link",      "format": "@"},
+    {"header": "Media ID",      "key": "media_id",  "format": "@"},
+    {"header": "Conta",         "key": "conta",     "format": "@"},
+    {"header": "Tipo",          "key": "tipo",      "format": "@"},
+    {"header": "Tem Dado",      "key": "tem_dado",  "format": "@"},
+    {"header": "Origem",        "key": "origem",    "format": "@"},
+]
+
+BOOSTED_HIST_COLUMNS: List[Dict[str, str]] = [
+    {"header": "Data",           "key": "data",           "format": "dd/MM/yyyy"},
+    {"header": "Media ID",       "key": "media_id",       "format": "@"},
+    {"header": "Conta",          "key": "conta",          "format": "@"},
+    {"header": "Link",           "key": "link",           "format": "@"},
+    {"header": "Legenda",        "key": "legenda",        "format": "@"},
+    {"header": "Tipo",           "key": "tipo",           "format": "@"},
+    {"header": "Visitas Perfil", "key": "profile_visits", "format": "0"},
+    {"header": "Seguidores",     "key": "follows",        "format": "0"},
+    {"header": "Alcance",        "key": "reach",          "format": "0"},
+    {"header": "Views",          "key": "views",          "format": "0"},
+    {"header": "Atualizado",     "key": "atualizado",     "format": "@"},
+]
+
+# Token com ads_read pra descobrir os impulsionamentos sozinho. Sem ele o sync
+# continua rodando com o que estiver colado na aba de entrada.
+META_ADS_ACCESS_TOKEN = os.environ.get("META_ADS_ACCESS_TOKEN", "")
+
 # Demografia de seguidores (aba ig_*_demograficos, overwrite diário).
 # Uma linha por (dimensao, chave). dimensao ∈ {idade_genero, cidade, pais}.
 # chave de idade_genero é "<faixa>|<genero>" (ex. "25-34|F").
