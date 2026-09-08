@@ -84,19 +84,23 @@ def extract_shortcode(link: str) -> str:
 # Fonte 1: descoberta pelo Meta Ads
 # ----------------------------------------------------------------------
 
-def discover_from_ads(token: str) -> List[str]:
-    """media_ids dos posts originais de todo impulsionamento das contas.
+def discover_from_ads(token: str) -> Dict[str, str]:
+    """{media_id: nome do anúncio} de todo impulsionamento das contas.
 
     Varre as contas de anúncio do usuário do token e devolve os
     `source_instagram_media_id` distintos. Inclui anúncio pausado: o
     histórico do post continua importando depois que a verba para.
+
+    O nome do anúncio vem junto porque é a única chave que liga este post à
+    linha de investimento no `fb_todos` (que não carrega media_id). Sem ele,
+    o dashboard teria que casar post e campanha por pedaço de legenda.
 
     Falha em silêncio (lista vazia) — sem token de ads a aba manual
     continua funcionando, e o sync das outras abas não pode quebrar por
     causa disso.
     """
     if not token:
-        return []
+        return {}
 
     base = config.IG_BASE_URL
     sess = requests.Session()
@@ -121,10 +125,9 @@ def discover_from_ads(token: str) -> List[str]:
     accounts = get("me/adaccounts", fields="id", limit=100).get("data", [])
     if not accounts:
         log.warning("discover_from_ads: nenhuma conta de anúncio acessível.")
-        return []
+        return {}
 
-    found: List[str] = []
-    seen = set()
+    found: Dict[str, str] = {}
     for acct in accounts:
         # limit alto + campo aninhado faz a Graph responder "reduce the amount
         # of data"; 50 por página passa em todas as contas.
@@ -144,9 +147,8 @@ def discover_from_ads(token: str) -> List[str]:
                 if not is_impulsionamento(ad.get("name", "")):
                     continue
                 mid = (ad.get("creative") or {}).get("source_instagram_media_id")
-                if mid and mid not in seen:
-                    seen.add(mid)
-                    found.append(mid)
+                if mid and mid not in found:
+                    found[mid] = (ad.get("name") or "").strip()
             path = data.get("paging", {}).get("next")
             paginas += 1
 
@@ -222,6 +224,7 @@ def build_rows(
     conta: str,
     dia: date,
     agora: str,
+    campanha: str = "",
 ) -> List[Dict[str, Any]]:
     """Uma linha de histórico por post coletado."""
     return [
@@ -229,6 +232,7 @@ def build_rows(
             "data": dia,
             "media_id": c["media_id"],
             "conta": conta,
+            "campanha": campanha,
             "link": c["link"],
             "legenda": c["legenda"],
             "tipo": c["tipo"],

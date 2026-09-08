@@ -269,8 +269,13 @@ def sync_boosted(svc, token: str) -> bool:
             else:
                 log.warning("Impulsionados: linha ignorada, link inválido: %r", row["link"])
 
-    for mid in boosted.discover_from_ads(config.META_ADS_ACCESS_TOKEN):
-        conhecidos.setdefault(mid, {"media_id": mid, "link": "", "origem": "meta_ads"})
+    for mid, campanha in boosted.discover_from_ads(config.META_ADS_ACCESS_TOKEN).items():
+        alvo = conhecidos.setdefault(
+            mid, {"media_id": mid, "link": "", "origem": "meta_ads"}
+        )
+        # Vale também pra linha que veio da planilha: quem sabe o nome do
+        # anúncio é o Meta Ads, não quem colou o link.
+        alvo["campanha"] = campanha
 
     # Resolve os links colados que ainda não têm media_id, em cada conta
     if pendentes:
@@ -308,6 +313,7 @@ def sync_boosted(svc, token: str) -> bool:
             log.warning("Impulsionados: media %s não visível por nenhuma conta.", mid)
             input_rows.append({
                 "link": meta.get("link", ""), "media_id": mid, "conta": "",
+                "campanha": meta.get("campanha", ""),
                 "tipo": "", "tem_dado": "nao (post inacessivel)",
                 "origem": meta.get("origem", "manual"),
             })
@@ -316,11 +322,14 @@ def sync_boosted(svc, token: str) -> bool:
         tem = dados["tipo"] == "FEED"
         input_rows.append({
             "link": dados["link"], "media_id": mid, "conta": conta,
+            "campanha": meta.get("campanha", ""),
             "tipo": dados["tipo"],
             "tem_dado": "sim" if tem else f"nao ({dados['tipo'].lower()})",
             "origem": meta.get("origem", "manual"),
         })
-        hist_rows.extend(boosted.build_rows([dados], conta, dia, agora))
+        hist_rows.extend(
+            boosted.build_rows([dados], conta, dia, agora, meta.get("campanha", ""))
+        )
 
     com_dado = sum(1 for r in input_rows if r["tem_dado"] == "sim")
     log.info(

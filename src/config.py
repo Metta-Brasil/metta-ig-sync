@@ -123,6 +123,7 @@ BOOSTED_INPUT_COLUMNS: List[Dict[str, str]] = [
     {"header": "Tipo",          "key": "tipo",      "format": "@"},
     {"header": "Tem Dado",      "key": "tem_dado",  "format": "@"},
     {"header": "Origem",        "key": "origem",    "format": "@"},
+    {"header": "Campanha",      "key": "campanha",  "format": "@"},
 ]
 
 BOOSTED_HIST_COLUMNS: List[Dict[str, str]] = [
@@ -140,6 +141,11 @@ BOOSTED_HIST_COLUMNS: List[Dict[str, str]] = [
     # na entrada, e com a coluna formatada como texto era a fração que
     # aparecia. Como hora, o mesmo valor exibe 22:50.
     {"header": "Atualizado",     "key": "atualizado",     "format": "HH:mm"},
+    # Nome do anúncio no Meta ("Post do Instagram: <legenda>"): é a chave que
+    # liga esta linha ao investimento no fb_todos, que não carrega media_id.
+    # No FIM de propósito — coluna no meio desalinharia as linhas já escritas,
+    # e este histórico não é reconstruível pela API.
+    {"header": "Campanha",       "key": "campanha",       "format": "@"},
 ]
 
 # Token com ads_read pra descobrir os impulsionamentos sozinho. Sem ele o sync
