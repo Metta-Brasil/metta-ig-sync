@@ -77,6 +77,15 @@ class WebSession:
     """Sessão autenticada por cookie, com os tokens que o GraphQL exige."""
 
     def __init__(self, sessionid: str, ds_user_id: str = "", csrftoken: str = ""):
+        # O secret do GitHub pode vir com aspas ou espaço/quebra de linha
+        # colados no copy-paste do DevTools — isso quebra o cookie sem
+        # sinal nenhum de erro (o servidor só trata como sessão inválida).
+        def _clean(v: str) -> str:
+            return (v or "").strip().strip('"').strip("'").strip()
+
+        sessionid = _clean(sessionid)
+        ds_user_id = _clean(ds_user_id)
+        csrftoken = _clean(csrftoken)
         if not sessionid:
             raise WebInsightsError("IG_SESSIONID ausente")
         self.s = requests.Session()
@@ -91,14 +100,28 @@ class WebSession:
             "sec-ch-ua": '"Chromium";v="140", "Not=A?Brand";v="24"',
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"macOS"',
+            "X-IG-WWW-Claim": "0",
         })
-        # O sessionid começa com o id do usuário ("<id>%3A..."): serve pro
-        # campo `av`, que o app manda preenchido.
+        # O sessionid começa com o id do usuário ("<id>%3A..." ou
+        # "<id>:..." — os dois formatos aparecem dependendo de onde o
+        # cookie foi copiado). Sem esse id, `av` fica "0" mas falta o
+        # ds_user_id que o navegador SEMPRE manda junto do sessionid — a
+        # ausência dele é o que faz o backend tratar a sessão como
+        # deslogada mesmo com o sessionid presente.
         self.uid = ds_user_id or sessionid.split("%3A")[0].split(":")[0]
+        ds_user_id = ds_user_id or self.uid
         for k, v in (("sessionid", sessionid), ("ds_user_id", ds_user_id),
                      ("csrftoken", csrftoken)):
             if v:
-                self.s.cookies.set(k, v, domain=".instagram.com")
+                self.s.cookies.set(k, v, domain=".instagram.com", path="/")
+        # Cookie explícito no header, como reforço: alguns proxies/urllib3
+        # não remontam corretamente o header Cookie a partir do jar quando
+        # os cookies foram setados manualmente (sem vir de um Set-Cookie).
+        self._cookie_header = "; ".join(
+            f"{k}={v}" for k, v in (("sessionid", sessionid),
+                                     ("ds_user_id", ds_user_id),
+                                     ("csrftoken", csrftoken)) if v
+        )
         self.dtsg = ""
         self.lsd = ""
         self._diag_done = False  # loga diagnóstico completo só na 1ª chamada
@@ -115,11 +138,29 @@ class WebSession:
         r'(NAf[A-Za-z0-9_-]{10,}:\d+:\d+)',
     )
     # Páginas candidatas: a home nem sempre traz o token para uma sessão
-    # buscada fora do navegador.
-    _PAGES = ("/", "/accounts/edit/", "/explore/")
+    # buscada fora do navegador. /accounts/edit/ saiu da lista: devolve 429
+    # (rate limit) e não agrega nada que a home/explore não deem.
+    _PAGES = ("/", "/explore/")
+
+    @staticmethod
+    def _setcookie_names(r: "requests.Response") -> List[str]:
+        """Nomes (só nomes) dos cookies que o servidor tentou setar/expirar.
+
+        Serve pra diagnosticar sem logar valor: se o servidor manda de
+        volta `sessionid=; Max-Age=0`, a sessão foi invalidada no backend
+        e não tem o que iterar no cliente.
+        """
+        try:
+            raw = r.raw.headers.getlist("Set-Cookie")
+        except Exception:
+            sc = r.headers.get("Set-Cookie", "")
+            raw = [sc] if sc else []
+        return sorted({c.split("=", 1)[0].strip() for c in raw if c})
 
     def preparar(self) -> None:
         """Pega fb_dtsg/lsd/csrftoken de uma página logada."""
+        log.info("WebSession: cookies no jar antes do GET: %s",
+                 sorted(self.s.cookies.keys()))
         doc_headers = {
             "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
                        "image/avif,image/webp,*/*;q=0.8"),
@@ -127,7 +168,10 @@ class WebSession:
             "Sec-Fetch-Mode": "navigate",
             "Sec-Fetch-Site": "none",
             "Upgrade-Insecure-Requests": "1",
+            "X-IG-WWW-Claim": "0",
         }
+        if self._cookie_header:
+            doc_headers["Cookie"] = self._cookie_header
         diag = []
         for page in self._PAGES:
             try:
@@ -136,8 +180,11 @@ class WebSession:
                 diag.append(f"{page}:erro")
                 continue
             html = r.text
-            logado = ('"viewer"' in html or "DTSGInitialData" in html
-                      or '"is_logged_in":true' in html)
+            # Critério de "logado de verdade": a home de uma sessão válida
+            # traz DTSGInitialData com um token ~84 chars. is_logged_in/
+            # viewer aparecem também em respostas deslogadas (falso
+            # positivo visto no run 474) — não servem sozinhos.
+            tem_dtsg_init = "DTSGInitialData" in html
             achou = None
             for i, pat in enumerate(self._DTSG_PATTERNS):
                 m = re.search(pat, html)
@@ -145,6 +192,7 @@ class WebSession:
                     self.dtsg = m.group(1)
                     achou = i
                     break
+            logado_real = tem_dtsg_init and len(self.dtsg) >= 70
             m = re.search(r'"LSD",\[\],\{"token":"([^"]+)"', html)
             if m:
                 self.lsd = m.group(1)
@@ -153,9 +201,14 @@ class WebSession:
                 if m:
                     self.s.cookies.set("csrftoken", m.group(1),
                                        domain=".instagram.com")
+            setcookie_names = self._setcookie_names(r)
             diag.append(
                 f"{page}:{r.status_code} bytes={len(html)} "
-                f"logado={logado} dtsg={'p%d' % achou if achou is not None else 'nao'}"
+                f"logado_real={logado_real} dtsg_init={tem_dtsg_init} "
+                f"dtsg={'p%d(%d)' % (achou, len(self.dtsg)) if achou is not None else 'nao'} "
+                f"sid_no_jar={'sessionid' in self.s.cookies} "
+                f"jar={sorted(self.s.cookies.keys())} "
+                f"set_cookie={setcookie_names}"
             )
             if self.dtsg:
                 log.info("WebSession: token obtido em %s (%s)", page,
@@ -187,6 +240,7 @@ class WebSession:
             "X-CSRFToken": self.s.cookies.get("csrftoken") or "",
             "X-FB-LSD": self.lsd,
             "X-IG-App-ID": APP_ID,
+            "X-IG-WWW-Claim": "0",
             "X-ASBD-ID": "359341",
             "X-Requested-With": "XMLHttpRequest",
             "X-FB-Friendly-Name": "PolarisMediaInsights",
@@ -196,6 +250,8 @@ class WebSession:
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
         }
+        if self._cookie_header:
+            headers["Cookie"] = self._cookie_header
         if not self._diag_done:
             cookie_names = sorted(self.s.cookies.get_dict().keys())
             log.info(
@@ -206,8 +262,10 @@ class WebSession:
             )
         r = self.s.post(IG + "/api/graphql", data=body, headers=headers, timeout=60)
         if not self._diag_done:
-            log.info("WebSession diag: POST status=%d resp[:300]=%r",
-                     r.status_code, r.text[:300])
+            log.info(
+                "WebSession diag: POST status=%d set_cookie=%s resp[:300]=%r",
+                r.status_code, self._setcookie_names(r), r.text[:300],
+            )
             self._diag_done = True
         txt = r.text
         if txt.startswith("for (;;);"):
