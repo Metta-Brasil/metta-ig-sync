@@ -314,7 +314,7 @@ def sync_boosted(svc, token: str) -> bool:
                         "colunas (IG)/Anúncio ficarão vazias nessa conta.", nome)
             continue
         try:
-            sess = web.WebSession(sid)
+            sess = web.WebSession(sid, cookie_header=config.IG_COOKIES.get(nome, ""))
             sess.preparar()
             sessoes[nome] = sess
             log.info("Impulsionados: sessão web de %s pronta.", nome)

@@ -76,7 +76,8 @@ def _jazoest(dtsg: str) -> str:
 class WebSession:
     """Sessão autenticada por cookie, com os tokens que o GraphQL exige."""
 
-    def __init__(self, sessionid: str, ds_user_id: str = "", csrftoken: str = ""):
+    def __init__(self, sessionid: str, ds_user_id: str = "", csrftoken: str = "",
+                 cookie_header: str = ""):
         # O secret do GitHub pode vir com aspas ou espaço/quebra de linha
         # colados no copy-paste do DevTools — isso quebra o cookie sem
         # sinal nenhum de erro (o servidor só trata como sessão inválida).
@@ -140,6 +141,26 @@ class WebSession:
         # vir com a casca deslogada (487KB) a partir da run 475: faltava
         # exatamente o conjunto de cookies que o Instagram usa pra
         # confiar no cliente. Deixa o requests.Session cuidar disso.
+        # Conjunto COMPLETO de cookies do navegador, quando fornecido. Só o
+        # sessionid passa uma vez e cai em seguida: o Instagram amarra a
+        # sessão aos cookies de dispositivo (ig_did, mid, datr, rur...). Com o
+        # header inteiro a requisição é indistinguível da do navegador.
+        cookie_header = _clean(cookie_header)
+        if cookie_header and cookie_header != "PREENCHER":
+            n = 0
+            for par in cookie_header.split(";"):
+                if "=" not in par:
+                    continue
+                k, v = par.split("=", 1)
+                k, v = k.strip(), v.strip()
+                if k:
+                    self.s.cookies.set(k, v, domain=".instagram.com", path="/")
+                    n += 1
+            log.info("WebSession: %d cookies carregados do header completo "
+                     "(%s)", n, ",".join(sorted(c.name for c in self.s.cookies)))
+            sid = self.s.cookies.get("sessionid") or sessionid
+            self.uid = (self.s.cookies.get("ds_user_id")
+                        or sid.split("%3A")[0].split(":")[0])
         self.dtsg = ""
         self.lsd = ""
         self._diag_done = False  # loga diagnóstico completo só na 1ª chamada

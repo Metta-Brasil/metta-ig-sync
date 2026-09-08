@@ -126,6 +126,12 @@ IG_SESSIONIDS = {
     "tiago": os.environ.get("IG_SESSIONID_TIAGO", ""),
     "metta": os.environ.get("IG_SESSIONID_METTA", ""),
 }
+# Header Cookie completo do navegador, por conta (opcional; prevalece sobre o
+# sessionid isolado quando presente).
+IG_COOKIES = {
+    "tiago": os.environ.get("IG_COOKIES_TIAGO", ""),
+    "metta": os.environ.get("IG_COOKIES_METTA", ""),
+}
 
 BOOSTED_INPUT_SHEET = "ig_impulsionados"
 BOOSTED_HIST_SHEET = "ig_impulsionados_hist"
