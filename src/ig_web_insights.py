@@ -22,6 +22,7 @@ antigas, então a aba nunca fica sem dado.
 """
 
 import json
+import os
 import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -73,11 +74,37 @@ def _jazoest(dtsg: str) -> str:
     return "2" + str(sum(ord(c) for c in dtsg))
 
 
+def jar_path(conta: str) -> str:
+    return os.path.expanduser(f"~/.mcp-env/ig_web_cookies_{conta}.json")
+
+
+def load_jar(conta: str) -> Dict[str, str]:
+    """Cookies salvos do run anterior. {} se ainda não existe."""
+    try:
+        with open(jar_path(conta)) as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_jar(conta: str, cookies: Dict[str, str]) -> None:
+    """Sessão ROLANTE: o Instagram renova sessionid/rur/csrftoken em uso e
+    o navegador guarda a renovação. Sem isso, o cookie copiado à mão vale
+    até a primeira rotação e cai. Arquivo com permissão 600."""
+    path = jar_path(conta)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(cookies, fh)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
 class WebSession:
     """Sessão autenticada por cookie, com os tokens que o GraphQL exige."""
 
     def __init__(self, sessionid: str, ds_user_id: str = "", csrftoken: str = "",
-                 cookie_header: str = ""):
+                 cookie_header: str = "", saved: Optional[Dict[str, str]] = None):
         # O secret do GitHub pode vir com aspas ou espaço/quebra de linha
         # colados no copy-paste do DevTools — isso quebra o cookie sem
         # sinal nenhum de erro (o servidor só trata como sessão inválida).
@@ -161,6 +188,12 @@ class WebSession:
             sid = self.s.cookies.get("sessionid") or sessionid
             self.uid = (self.s.cookies.get("ds_user_id")
                         or sid.split("%3A")[0].split(":")[0])
+        # Jar salvo do run anterior tem prioridade: é a versão mais recente da
+        # sessão, já com as rotações que o Instagram fez em uso.
+        if saved:
+            for k, v in saved.items():
+                self.s.cookies.set(k, v, domain=".instagram.com", path="/")
+            log.info("WebSession: %d cookies restaurados do jar salvo.", len(saved))
         self.dtsg = ""
         self.lsd = ""
         self._diag_done = False  # loga diagnóstico completo só na 1ª chamada
@@ -259,6 +292,9 @@ class WebSession:
                          " | ".join(diag))
                 return
         raise WebInsightsError("não achei fb_dtsg — " + " | ".join(diag))
+
+    def cookies_dict(self) -> Dict[str, str]:
+        return {c.name: c.value for c in self.s.cookies}
 
     def _graphql(self, doc_id: str, variables: Dict[str, Any]) -> Dict[str, Any]:
         if not self.dtsg:

@@ -314,7 +314,8 @@ def sync_boosted(svc, token: str) -> bool:
                         "colunas (IG)/Anúncio ficarão vazias nessa conta.", nome)
             continue
         try:
-            sess = web.WebSession(sid, cookie_header=config.IG_COOKIES.get(nome, ""))
+            sess = web.WebSession(sid, cookie_header=config.IG_COOKIES.get(nome, ""),
+                                  saved=web.load_jar(nome))
             sess.preparar()
             sessoes[nome] = sess
             log.info("Impulsionados: sessão web de %s pronta.", nome)
@@ -395,6 +396,18 @@ def sync_boosted(svc, token: str) -> bool:
 
     boosted_input_write(svc, input_rows)
     boosted_hist_upsert(svc, hist_rows)
+
+    # Sessão rolante: guarda o jar com as renovações que o Instagram fez
+    # durante a coleta. Só salva se a sessão coletou algo — jar de sessão
+    # morta não pode sobrescrever um bom.
+    web_ok = {r["conta"] for r in hist_rows if r.get("web_follows") not in ("", None)}
+    for nome, sess in sessoes.items():
+        if nome in web_ok:
+            web.save_jar(nome, sess.cookies_dict())
+    for nome in config.IG_SESSIONIDS:
+        if nome not in web_ok:
+            log.error("Impulsionados: conta %s SEM dado web neste run — sessão "
+                      "caiu ou não configurada. Recopiar o cookie.", nome)
     return True
 
 
