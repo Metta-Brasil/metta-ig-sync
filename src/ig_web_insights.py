@@ -102,34 +102,65 @@ class WebSession:
         self.dtsg = ""
         self.lsd = ""
 
+    # O fb_dtsg aparece em formatos diferentes conforme o bundle servido.
+    # Em vez de um padrão só, tenta vários e registra qual casou — foi o que
+    # travou a primeira versão, que só conhecia "DTSGInitialData".
+    _DTSG_PATTERNS = (
+        r'"DTSGInitialData",\[\],\{"token":"([^"]+)"',
+        r'"dtsg":\s*\{"token":"([^"]+)"',
+        r'\\"dtsg\\":\s*\{\\"token\\":\\"([^\\"]+)\\"',
+        r'"fb_dtsg"\s*:\s*"([^"]+)"',
+        r'name="fb_dtsg"\s+value="([^"]+)"',
+        r'(NAf[A-Za-z0-9_-]{10,}:\d+:\d+)',
+    )
+    # Páginas candidatas: a home nem sempre traz o token para uma sessão
+    # buscada fora do navegador.
+    _PAGES = ("/", "/accounts/edit/", "/explore/")
+
     def preparar(self) -> None:
-        """Pega fb_dtsg/lsd/csrftoken de uma página logada qualquer."""
-        # Requisição de DOCUMENTO. Com headers de XHR (X-Requested-With,
-        # Accept */*) o Instagram devolve outra resposta e o fb_dtsg não vem.
-        r = self.s.get(IG + "/", timeout=60, headers={
+        """Pega fb_dtsg/lsd/csrftoken de uma página logada."""
+        doc_headers = {
             "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
                        "image/avif,image/webp,*/*;q=0.8"),
             "Sec-Fetch-Dest": "document",
             "Sec-Fetch-Mode": "navigate",
             "Sec-Fetch-Site": "none",
             "Upgrade-Insecure-Requests": "1",
-        })
-        html = r.text
-        if "DTSGInitialData" not in html and '"dtsg"' not in html:
-            raise WebInsightsError(
-                "sessão web não autenticada (cookie expirado ou inválido)"
-            )
-        m = (re.search(r'"DTSGInitialData",\[\],\{"token":"([^"]+)"', html)
-             or re.search(r'"dtsg":\{"token":"([^"]+)"', html))
-        if not m:
-            raise WebInsightsError("não achei fb_dtsg na página")
-        self.dtsg = m.group(1)
-        m = re.search(r'"LSD",\[\],\{"token":"([^"]+)"', html)
-        self.lsd = m.group(1) if m else ""
-        if not self.s.cookies.get("csrftoken"):
-            m = re.search(r'"csrf_token":"([^"]+)"', html)
+        }
+        diag = []
+        for page in self._PAGES:
+            try:
+                r = self.s.get(IG + page, timeout=60, headers=doc_headers)
+            except Exception as exc:
+                diag.append(f"{page}:erro")
+                continue
+            html = r.text
+            logado = ('"viewer"' in html or "DTSGInitialData" in html
+                      or '"is_logged_in":true' in html)
+            achou = None
+            for i, pat in enumerate(self._DTSG_PATTERNS):
+                m = re.search(pat, html)
+                if m:
+                    self.dtsg = m.group(1)
+                    achou = i
+                    break
+            m = re.search(r'"LSD",\[\],\{"token":"([^"]+)"', html)
             if m:
-                self.s.cookies.set("csrftoken", m.group(1), domain=".instagram.com")
+                self.lsd = m.group(1)
+            if not self.s.cookies.get("csrftoken"):
+                m = re.search(r'"csrf_token":"([^"]+)"', html)
+                if m:
+                    self.s.cookies.set("csrftoken", m.group(1),
+                                       domain=".instagram.com")
+            diag.append(
+                f"{page}:{r.status_code} bytes={len(html)} "
+                f"logado={logado} dtsg={'p%d' % achou if achou is not None else 'nao'}"
+            )
+            if self.dtsg:
+                log.info("WebSession: token obtido em %s (%s)", page,
+                         " | ".join(diag))
+                return
+        raise WebInsightsError("não achei fb_dtsg — " + " | ".join(diag))
 
     def _graphql(self, doc_id: str, variables: Dict[str, Any]) -> Dict[str, Any]:
         if not self.dtsg:
