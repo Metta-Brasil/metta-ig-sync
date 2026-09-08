@@ -269,7 +269,17 @@ def sync_boosted(svc, token: str) -> bool:
             else:
                 log.warning("Impulsionados: linha ignorada, link inválido: %r", row["link"])
 
-    for mid, campanha in boosted.discover_from_ads(config.META_ADS_ACCESS_TOKEN).items():
+    descobertos = boosted.discover_from_ads(config.META_ADS_ACCESS_TOKEN)
+    # Token de ads configurado e descoberta vazia = alguma coisa quebrou
+    # (token recusado, conta sem acesso, mudança de nomenclatura). Antes isso
+    # passava como sucesso: a aba parava de crescer e nada acusava, enquanto
+    # o histórico dos posts já conhecidos continuava enchendo normalmente.
+    if config.META_ADS_ACCESS_TOKEN and not descobertos:
+        raise RuntimeError(
+            "descoberta de impulsionamentos voltou vazia com token de ads "
+            "configurado — token recusado ou nomenclatura mudou"
+        )
+    for mid, campanha in descobertos.items():
         alvo = conhecidos.setdefault(
             mid, {"media_id": mid, "link": "", "origem": "meta_ads"}
         )
@@ -332,10 +342,22 @@ def sync_boosted(svc, token: str) -> bool:
         )
 
     com_dado = sum(1 for r in input_rows if r["tem_dado"] == "sim")
+    inacessiveis = [r["media_id"] for r in input_rows
+                    if r["tem_dado"] == "nao (post inacessivel)"]
     log.info(
         "Impulsionados: %d post(s), %d com visitas/seguidores disponíveis.",
         len(input_rows), com_dado,
     )
+    # Post que nenhuma conta enxerga trava a série daquele post. Um ou outro
+    # é esperado (post apagado); metade da lista é sinal de token vencido.
+    if inacessiveis and len(inacessiveis) > len(input_rows) / 2:
+        raise RuntimeError(
+            f"{len(inacessiveis)} de {len(input_rows)} posts inacessíveis — "
+            "token do Instagram provavelmente vencido"
+        )
+    if inacessiveis:
+        log.warning("Impulsionados: %d post(s) inacessível(is): %s",
+                    len(inacessiveis), ", ".join(inacessiveis[:10]))
 
     boosted_input_write(svc, input_rows)
     boosted_hist_upsert(svc, hist_rows)

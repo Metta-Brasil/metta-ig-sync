@@ -113,6 +113,11 @@ POSTS_COLUMNS: List[Dict[str, str]] = [
 #   ig_impulsionados_hist saída. Uma linha por (dia, post), atualizada durante
 #                         o dia. O ganho de um dia é a diferença entre o
 #                         fechamento dele e o do dia anterior.
+# Janela da descoberta: anúncio de impulsionamento só entra se teve ENTREGA
+# nos últimos N dias. 365 cobre o histórico útil em ~19 páginas de insights;
+# varrer /ads sem filtro traria 185 posts de 2023/24 pra coletar toda hora.
+BOOSTED_DISCOVERY_DAYS = int(os.environ.get("BOOSTED_DISCOVERY_DAYS", "365"))
+
 BOOSTED_INPUT_SHEET = "ig_impulsionados"
 BOOSTED_HIST_SHEET = "ig_impulsionados_hist"
 

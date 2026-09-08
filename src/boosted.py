@@ -37,10 +37,11 @@ media_product_type=REELS. A linha é gravada mesmo assim, com as células
 vazias, pra diferenciar "não temos o dado" de "deu zero".
 """
 
+import json
 import logging
 import os
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -85,19 +86,25 @@ def extract_shortcode(link: str) -> str:
 # ----------------------------------------------------------------------
 
 def discover_from_ads(token: str) -> Dict[str, str]:
-    """{media_id: nome do anúncio} de todo impulsionamento das contas.
+    """{media_id: nome do anúncio} dos impulsionamentos COM ENTREGA na janela.
 
-    Varre as contas de anúncio do usuário do token e devolve os
-    `source_instagram_media_id` distintos. Inclui anúncio pausado: o
-    histórico do post continua importando depois que a verba para.
+    O critério é entrega, não posição na lista nem data de criação.
 
-    O nome do anúncio vem junto porque é a única chave que liga este post à
-    linha de investimento no `fb_todos` (que não carrega media_id). Sem ele,
-    o dashboard teria que casar post e campanha por pedaço de legenda.
+    Histórico das duas tentativas anteriores, porque as duas quebravam:
+      1. Varredura cega de `/ads`, 50 por página, teto de 12 páginas. A CA01
+         e a METTA-CA01 têm 2.000 anúncios cada e havia impulsionamento na
+         posição 1942 — ficava de fora, em silêncio.
+      2. Tirar o teto e filtrar por nome no servidor. Aí aparecem 185 posts,
+         quase todos de 2023/24, e o sync passaria a coletar insight de 185
+         mídias por hora pra acompanhar ~25 que interessam.
 
-    Falha em silêncio (lista vazia) — sem token de ads a aba manual
+    Entrega resolve os dois: `/insights` a nível de anúncio só devolve o que
+    rodou na janela. Hoje são 30 anúncios em 19 páginas no ano inteiro,
+    contra 2.000+ da varredura cega.
+
+    Falha em silêncio (dicionário vazio) — sem token de ads a aba manual
     continua funcionando, e o sync das outras abas não pode quebrar por
-    causa disso.
+    causa disso. O chamador registra quando vem vazio.
     """
     if not token:
         return {}
@@ -108,16 +115,15 @@ def discover_from_ads(token: str) -> Dict[str, str]:
     def get(path: str, **params: Any) -> Dict[str, Any]:
         params["access_token"] = token
         try:
-            r = sess.get(f"{base}/{path}", params=params, timeout=30)
+            r = sess.get(f"{base}/{path}", params=params, timeout=60)
             return r.json()
-        except Exception as exc:  # rede, timeout, json inválido
+        except Exception as exc:
             log.warning("discover_from_ads: falha em %s: %s", path, _redact(exc))
             return {}
 
     def get_url(url: str) -> Dict[str, Any]:
-        """Segue o paging.next, que já vem com token e cursor embutidos."""
         try:
-            return sess.get(url, timeout=30).json()
+            return sess.get(url, timeout=60).json()
         except Exception as exc:
             log.warning("discover_from_ads: falha ao paginar: %s", _redact(exc))
             return {}
@@ -127,12 +133,20 @@ def discover_from_ads(token: str) -> Dict[str, str]:
         log.warning("discover_from_ads: nenhuma conta de anúncio acessível.")
         return {}
 
-    found: Dict[str, str] = {}
+    hoje = datetime.now(BRT).date()
+    desde = hoje - timedelta(days=config.BOOSTED_DISCOVERY_DAYS)
+    janela = json.dumps({"since": desde.isoformat(), "until": hoje.isoformat()})
+
+    # 1º passe: quais anúncios de impulsionamento tiveram entrega na janela.
+    nomes: Dict[str, str] = {}
     for acct in accounts:
-        # limit alto + campo aninhado faz a Graph responder "reduce the amount
-        # of data"; 50 por página passa em todas as contas.
-        params = {"fields": "name,creative{source_instagram_media_id}", "limit": 50}
-        path = f"{acct['id']}/ads"
+        params = {
+            "level": "ad",
+            "fields": "ad_id,ad_name",
+            "time_range": janela,
+            "limit": 500,
+        }
+        path = f"{acct['id']}/insights"
         paginas = 0
         while path and paginas < MAX_PAGINAS_ADS:
             data = get(path, **params) if paginas == 0 else get_url(path)
@@ -143,18 +157,43 @@ def discover_from_ads(token: str) -> Dict[str, str]:
                         acct["id"], str(data["error"].get("message"))[:120],
                     )
                 break
-            for ad in data.get("data", []):
-                if not is_impulsionamento(ad.get("name", "")):
-                    continue
-                mid = (ad.get("creative") or {}).get("source_instagram_media_id")
-                if mid and mid not in found:
-                    found[mid] = (ad.get("name") or "").strip()
+            for row in data.get("data", []):
+                if is_impulsionamento(row.get("ad_name", "")):
+                    nomes[str(row["ad_id"])] = (row.get("ad_name") or "").strip()
             path = data.get("paging", {}).get("next")
             paginas += 1
 
+    if not nomes:
+        log.warning(
+            "discover_from_ads: nenhum impulsionamento com entrega nos "
+            "últimos %d dias.", config.BOOSTED_DISCOVERY_DAYS,
+        )
+        return {}
+
+    # 2º passe: o media_id do post ORIGINAL. `/insights` não devolve criativo,
+    # então é uma leitura em lote por ids — 1 chamada a cada 50 anúncios.
+    found: Dict[str, str] = {}
+    ids = list(nomes)
+    for k in range(0, len(ids), 50):
+        lote = ids[k:k + 50]
+        data = get("", ids=",".join(lote),
+                   fields="creative{source_instagram_media_id}")
+        if not data or "error" in data:
+            if data:
+                log.warning(
+                    "discover_from_ads: lote de criativos: %s",
+                    str(data.get("error", {}).get("message"))[:120],
+                )
+            continue
+        for ad_id, ad in data.items():
+            mid = ((ad or {}).get("creative") or {}).get("source_instagram_media_id")
+            if mid and mid not in found:
+                found[mid] = nomes.get(str(ad_id), "")
+
     log.info(
-        "discover_from_ads: %d post(s) impulsionado(s) em %d conta(s) de anúncio.",
-        len(found), len(accounts),
+        "discover_from_ads: %d anúncio(s) com entrega em %d dias -> %d post(s) "
+        "impulsionado(s), em %d conta(s).",
+        len(nomes), config.BOOSTED_DISCOVERY_DAYS, len(found), len(accounts),
     )
     return found
 
