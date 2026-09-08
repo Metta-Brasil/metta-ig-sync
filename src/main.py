@@ -21,6 +21,7 @@ import sys
 from datetime import date, datetime, timedelta
 
 from . import boosted, config
+from . import ig_web_insights as web
 from .instagram import BRT, IGClient, parse_media_date, parse_media_datetime
 from .sheets import (
     _build_service,
