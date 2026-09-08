@@ -93,8 +93,31 @@ def _parse_sa_json(raw: str) -> Dict[str, Any]:
 
 def _build_service():
     raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
-    info = _parse_sa_json(raw)
-    creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+    if raw:
+        info = _parse_sa_json(raw)
+        creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+        return build("sheets", "v4", credentials=creds, cache_discovery=False)
+
+    # Sem service account (job local no Mac): autentica com a credencial OAuth
+    # do usuário, a mesma do MCP do Google Workspace. O arquivo traz client_id,
+    # client_secret e refresh_token; o token de acesso é renovado sozinho.
+    path = os.environ.get("GOOGLE_OAUTH_CREDENTIALS_FILE", "")
+    if not path:
+        raise RuntimeError(
+            "GOOGLE_SERVICE_ACCOUNT_JSON ausente e GOOGLE_OAUTH_CREDENTIALS_FILE "
+            "não definido"
+        )
+    from google.oauth2.credentials import Credentials
+    with open(os.path.expanduser(path)) as fh:
+        c = json.load(fh)
+    creds = Credentials(
+        None,
+        refresh_token=c["refresh_token"],
+        client_id=c["client_id"],
+        client_secret=c["client_secret"],
+        token_uri="https://oauth2.googleapis.com/token",
+        scopes=SCOPES,
+    )
     return build("sheets", "v4", credentials=creds, cache_discovery=False)
 
 
@@ -738,14 +761,22 @@ def boosted_hist_upsert(svc, rows: List[Dict[str, Any]]) -> None:
     # duplicaria a cada execução.
     existing = svc.spreadsheets().values().get(
         spreadsheetId=config.SPREADSHEET_ID,
-        range=f"{name}!A2:B",
+        range=f"{name}!A2:{end}",
         valueRenderOption="UNFORMATTED_VALUE",
     ).execute().get("values", [])
 
     index: Dict[Tuple[str, str], int] = {}
+    atuais: Dict[int, List[Any]] = {}
     for i, raw in enumerate(existing):
-        padded = list(raw) + ["", ""]
+        padded = list(raw) + [""] * (len(cols) - len(raw))
         index[(_date_key(padded[0]), str(padded[1]).strip())] = i + 2
+        atuais[i + 2] = padded
+
+    # Colunas que só o job local (sessão web no Mac) preenche. O run do
+    # GitHub não tem cookie e mandaria "" nelas: em vez de apagar o que o
+    # Mac escreveu, mantém o valor que já está na linha.
+    preservar = {i for i, c in enumerate(cols)
+                 if c["key"].startswith(("web_", "ad_"))}
 
     updates: List[Dict[str, Any]] = []
     appends: List[List[Any]] = []
@@ -754,6 +785,10 @@ def boosted_hist_upsert(svc, rows: List[Dict[str, Any]]) -> None:
         vals = _row_values(r, cols)
         row_num = index.get(key)
         if row_num:
+            antiga = atuais.get(row_num, [])
+            for i in preservar:
+                if (vals[i] in ("", None)) and i < len(antiga) and antiga[i] not in ("", None):
+                    vals[i] = antiga[i]
             updates.append({"range": f"{name}!A{row_num}:{end}{row_num}", "values": [vals]})
         else:
             appends.append(vals)

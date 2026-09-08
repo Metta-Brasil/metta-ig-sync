@@ -422,10 +422,15 @@ def main() -> int:
             return 1
 
     any_failed = False
-    for account in accounts:
-        success = sync_account(svc, account, token)
-        if not success:
-            any_failed = True
+    # BOOSTED_ONLY=true: só a coleta dos impulsionados. É o modo do job local
+    # no Mac, que existe porque o Instagram rejeita a sessão web vinda do IP
+    # do runner do GitHub. Perfil/posts/stories seguem no GitHub.
+    boosted_only = os.environ.get("BOOSTED_ONLY", "").lower() == "true"
+    if not boosted_only:
+        for account in accounts:
+            success = sync_account(svc, account, token)
+            if not success:
+                any_failed = True
 
     try:
         sync_boosted(svc, token)
