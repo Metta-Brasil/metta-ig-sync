@@ -114,14 +114,17 @@ class WebSession:
                      ("csrftoken", csrftoken)):
             if v:
                 self.s.cookies.set(k, v, domain=".instagram.com", path="/")
-        # Cookie explícito no header, como reforço: alguns proxies/urllib3
-        # não remontam corretamente o header Cookie a partir do jar quando
-        # os cookies foram setados manualmente (sem vir de um Set-Cookie).
-        self._cookie_header = "; ".join(
-            f"{k}={v}" for k, v in (("sessionid", sessionid),
-                                     ("ds_user_id", ds_user_id),
-                                     ("csrftoken", csrftoken)) if v
-        )
+        # NADA de forçar um header Cookie manual aqui: http.cookiejar só
+        # monta o header sozinho quando a requisição AINDA não tem um
+        # (`if not request.has_header("Cookie")`). O "reforço" da versão
+        # anterior travava esse header no snapshot do __init__ (só
+        # sessionid+ds_user_id) e por isso PISAVA no cookiejar em toda
+        # chamada seguinte — datr/mid/ig_did/csrftoken, que só entram no
+        # jar depois do primeiro GET (via Set-Cookie), nunca eram
+        # mandados. É provavelmente por isso que o /explore/ passou a
+        # vir com a casca deslogada (487KB) a partir da run 475: faltava
+        # exatamente o conjunto de cookies que o Instagram usa pra
+        # confiar no cliente. Deixa o requests.Session cuidar disso.
         self.dtsg = ""
         self.lsd = ""
         self._diag_done = False  # loga diagnóstico completo só na 1ª chamada
@@ -144,18 +147,24 @@ class WebSession:
 
     @staticmethod
     def _setcookie_names(r: "requests.Response") -> List[str]:
-        """Nomes (só nomes) dos cookies que o servidor tentou setar/expirar.
+        """Nomes (só nomes) dos cookies que o servidor tentou setar/expirar,
+        varrendo TODA a cadeia de redirect (r.history + resposta final) —
+        um Set-Cookie que limpa sessionid pode vir num 30x intermediário
+        e `r.raw` sozinho só enxerga a última resposta.
 
         Serve pra diagnosticar sem logar valor: se o servidor manda de
         volta `sessionid=; Max-Age=0`, a sessão foi invalidada no backend
         e não tem o que iterar no cliente.
         """
-        try:
-            raw = r.raw.headers.getlist("Set-Cookie")
-        except Exception:
-            sc = r.headers.get("Set-Cookie", "")
-            raw = [sc] if sc else []
-        return sorted({c.split("=", 1)[0].strip() for c in raw if c})
+        names = set()
+        for resp in list(getattr(r, "history", []) or []) + [r]:
+            try:
+                raw = resp.raw.headers.getlist("Set-Cookie")
+            except Exception:
+                sc = resp.headers.get("Set-Cookie", "")
+                raw = [sc] if sc else []
+            names.update(c.split("=", 1)[0].strip() for c in raw if c)
+        return sorted(names)
 
     def preparar(self) -> None:
         """Pega fb_dtsg/lsd/csrftoken de uma página logada."""
@@ -170,8 +179,6 @@ class WebSession:
             "Upgrade-Insecure-Requests": "1",
             "X-IG-WWW-Claim": "0",
         }
-        if self._cookie_header:
-            doc_headers["Cookie"] = self._cookie_header
         diag = []
         for page in self._PAGES:
             try:
@@ -202,13 +209,14 @@ class WebSession:
                     self.s.cookies.set("csrftoken", m.group(1),
                                        domain=".instagram.com")
             setcookie_names = self._setcookie_names(r)
+            redirects = [h.status_code for h in r.history]
             diag.append(
                 f"{page}:{r.status_code} bytes={len(html)} "
                 f"logado_real={logado_real} dtsg_init={tem_dtsg_init} "
                 f"dtsg={'p%d(%d)' % (achou, len(self.dtsg)) if achou is not None else 'nao'} "
                 f"sid_no_jar={'sessionid' in self.s.cookies} "
                 f"jar={sorted(self.s.cookies.keys())} "
-                f"set_cookie={setcookie_names}"
+                f"set_cookie={setcookie_names} redirects={redirects}"
             )
             if self.dtsg:
                 log.info("WebSession: token obtido em %s (%s)", page,
@@ -250,8 +258,6 @@ class WebSession:
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
         }
-        if self._cookie_header:
-            headers["Cookie"] = self._cookie_header
         if not self._diag_done:
             cookie_names = sorted(self.s.cookies.get_dict().keys())
             log.info(
