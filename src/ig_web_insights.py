@@ -80,12 +80,29 @@ class WebSession:
         if not sessionid:
             raise WebInsightsError("IG_SESSIONID ausente")
         self.s = requests.Session()
+        # Headers do navegador. Sem eles o GraphQL responde "Your Request
+        # Couldn't be Processed" mesmo com a sessão válida — a chamada é
+        # aceita pelo conjunto (app id + asbd + origem), não só pelo cookie.
         self.s.headers.update({
             "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                            "AppleWebKit/537.36 (KHTML, like Gecko) "
                            "Chrome/140.0.0.0 Safari/537.36"),
             "X-IG-App-ID": APP_ID,
+            "X-ASBD-ID": "359341",
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "*/*",
+            "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+            "Origin": IG,
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "sec-ch-ua": '"Chromium";v="140", "Not=A?Brand";v="24"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"macOS"',
         })
+        # O sessionid começa com o id do usuário ("<id>%3A..."): serve pro
+        # campo `av`, que o app manda preenchido.
+        self.uid = ds_user_id or sessionid.split("%3A")[0].split(":")[0]
         for k, v in (("sessionid", sessionid), ("ds_user_id", ds_user_id),
                      ("csrftoken", csrftoken)):
             if v:
@@ -117,8 +134,9 @@ class WebSession:
         if not self.dtsg:
             self.preparar()
         body = {
-            "av": "0", "__d": "www", "__user": "0", "__a": "1", "__req": "z",
-            "dpr": "2", "fb_dtsg": self.dtsg, "lsd": self.lsd,
+            "av": self.uid, "__d": "www", "__user": self.uid, "__a": "1",
+            "__req": "z", "__comet_req": "7",
+            "dpr": "1", "fb_dtsg": self.dtsg, "lsd": self.lsd,
             "jazoest": _jazoest(self.dtsg),
             "fb_api_caller_class": "RelayModern",
             "fb_api_req_friendly_name": "PolarisMediaInsights",
@@ -130,6 +148,7 @@ class WebSession:
             "X-CSRFToken": self.s.cookies.get("csrftoken") or "",
             "X-FB-LSD": self.lsd,
             "Referer": IG + "/",
+            "X-FB-Friendly-Name": "PolarisMediaInsights",
         }
         r = self.s.post(IG + "/api/graphql", data=body, headers=headers, timeout=60)
         txt = r.text
