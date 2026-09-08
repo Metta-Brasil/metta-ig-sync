@@ -83,7 +83,22 @@ class WebSession:
         def _clean(v: str) -> str:
             return (v or "").strip().strip('"').strip("'").strip()
 
+        bruto = sessionid or ""
         sessionid = _clean(sessionid)
+        # Diagnóstico de FORMATO (nunca o valor): o servidor devolveu 302 e um
+        # sessionid novo já no primeiro GET, o que é assinatura de cookie
+        # rejeitado. Um sessionid válido é "<id>%3A<...>%3A<...>": prefixo
+        # numérico, separadores codificados, 60–120 chars, sem espaço/aspas.
+        segs = sessionid.replace("%3A", ":").split(":")
+        log.info(
+            "WebSession: formato do sessionid: len=%d segs=%d prefixo_num=%s "
+            "encoded=%s raw_colon=%s limpo_mudou=%s",
+            len(sessionid), len(segs), segs[0].isdigit() if segs else False,
+            "%3A" in sessionid, ":" in sessionid, bruto != sessionid,
+        )
+        # Se veio decodificado (":"), recodifica como o navegador envia.
+        if ":" in sessionid and "%3A" not in sessionid:
+            sessionid = sessionid.replace(":", "%3A")
         ds_user_id = _clean(ds_user_id)
         csrftoken = _clean(csrftoken)
         if not sessionid:
