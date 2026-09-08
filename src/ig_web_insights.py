@@ -101,6 +101,7 @@ class WebSession:
                 self.s.cookies.set(k, v, domain=".instagram.com")
         self.dtsg = ""
         self.lsd = ""
+        self._diag_done = False  # loga diagnóstico completo só na 1ª chamada
 
     # O fb_dtsg aparece em formatos diferentes conforme o bundle servido.
     # Em vez de um padrão só, tenta vários e registra qual casou — foi o que
@@ -165,10 +166,14 @@ class WebSession:
     def _graphql(self, doc_id: str, variables: Dict[str, Any]) -> Dict[str, Any]:
         if not self.dtsg:
             self.preparar()
+        # av/__user=0: é o que o fetch do navegador logado manda de fato
+        # (confirmado por captura). Usar o id numérico do usuário aqui
+        # fazia a chamada ser tratada como não-autenticada. __comet_req
+        # também não existe na captura real — tirado.
         body = {
-            "av": self.uid, "__d": "www", "__user": self.uid, "__a": "1",
-            "__req": "z", "__comet_req": "7",
-            "dpr": "1", "fb_dtsg": self.dtsg, "lsd": self.lsd,
+            "av": "0", "__d": "www", "__user": "0", "__a": "1",
+            "__req": "z",
+            "dpr": "2", "fb_dtsg": self.dtsg, "lsd": self.lsd,
             "jazoest": _jazoest(self.dtsg),
             "fb_api_caller_class": "RelayModern",
             "fb_api_req_friendly_name": "PolarisMediaInsights",
@@ -191,7 +196,19 @@ class WebSession:
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
         }
+        if not self._diag_done:
+            cookie_names = sorted(self.s.cookies.get_dict().keys())
+            log.info(
+                "WebSession diag: cookies=%s dtsg_len=%d lsd_len=%d "
+                "csrftoken_presente=%s",
+                cookie_names, len(self.dtsg), len(self.lsd),
+                bool(self.s.cookies.get("csrftoken")),
+            )
         r = self.s.post(IG + "/api/graphql", data=body, headers=headers, timeout=60)
+        if not self._diag_done:
+            log.info("WebSession diag: POST status=%d resp[:300]=%r",
+                     r.status_code, r.text[:300])
+            self._diag_done = True
         txt = r.text
         if txt.startswith("for (;;);"):
             txt = txt[len("for (;;);"):]
