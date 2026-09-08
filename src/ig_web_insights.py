@@ -111,6 +111,14 @@ class WebSession:
         def _clean(v: str) -> str:
             return (v or "").strip().strip('"').strip("'").strip()
 
+        # Sem sessionid avulso mas com a linha completa de cookies: pega o
+        # sessionid de dentro dela. A linha completa e a fonte preferida.
+        if not _clean(sessionid) and cookie_header:
+            for par in _clean(cookie_header).split(";"):
+                k, _, v = par.strip().partition("=")
+                if k.strip() == "sessionid":
+                    sessionid = v.strip()
+                    break
         bruto = sessionid or ""
         sessionid = _clean(sessionid)
         # Diagnóstico de FORMATO (nunca o valor): o servidor devolveu 302 e um
