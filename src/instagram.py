@@ -321,7 +321,12 @@ class IGClient:
         try:
             resp = self._session.get(url, params={
                 "access_token": self._token,
-                "fields": "permalink,caption,media_type,media_product_type,timestamp",
+                # `username` é o DONO real do post. Os dois tokens enxergam as
+                # mídias das duas contas (mesmo grupo), então "de quem respondeu
+                # primeiro" não serve: marcava metta em 27 posts, dos quais 19
+                # são do tiago. E o insight da tela só abre pro dono.
+                "fields": ("permalink,caption,media_type,media_product_type,"
+                           "timestamp,username"),
             }, timeout=30)
             if not resp.ok:
                 return {}

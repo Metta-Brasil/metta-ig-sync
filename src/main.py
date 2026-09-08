@@ -269,7 +269,7 @@ def sync_boosted(svc, token: str) -> bool:
             else:
                 log.warning("Impulsionados: linha ignorada, link inválido: %r", row["link"])
 
-    descobertos = boosted.discover_from_ads(config.META_ADS_ACCESS_TOKEN)
+    descobertos, ad_ids = boosted.discover_from_ads(config.META_ADS_ACCESS_TOKEN)
     # Token de ads configurado e descoberta vazia = alguma coisa quebrou
     # (token recusado, conta sem acesso, mudança de nomenclatura). Antes isso
     # passava como sucesso: a aba parava de crescer e nada acusava, enquanto
@@ -304,6 +304,22 @@ def sync_boosted(svc, token: str) -> bool:
         log.info("Impulsionados: nenhum post na lista, nada a coletar.")
         return True
 
+    # Sessões web (cookie por conta). Falha de sessão não derruba o sync: as
+    # colunas da Graph API continuam, e o log diz qual conta ficou sem.
+    sessoes: dict = {}
+    for nome, sid in config.IG_SESSIONIDS.items():
+        if not sid or sid == "PREENCHER":
+            log.warning("Impulsionados: sem cookie de sessão para %s — "
+                        "colunas (IG)/Anúncio ficarão vazias nessa conta.", nome)
+            continue
+        try:
+            sess = web.WebSession(sid)
+            sess.preparar()
+            sessoes[nome] = sess
+            log.info("Impulsionados: sessão web de %s pronta.", nome)
+        except Exception as exc:
+            log.error("Impulsionados: sessão web de %s falhou: %s", nome, exc)
+
     dia = datetime.now(BRT).date()
     agora = boosted.now_brt_hhmm()
     hist_rows: list = []
@@ -329,16 +345,33 @@ def sync_boosted(svc, token: str) -> bool:
             })
             continue
 
+        # Dono real do post, não "quem respondeu primeiro": os dois tokens
+        # enxergam as mídias das duas contas.
+        dono = {"tiago.alves.oliveira": "tiago",
+                "metta.brasil": "metta"}.get(dados.get("dono", ""), conta)
+
+        dados_web = {}
+        sess = sessoes.get(dono)
+        if sess:
+            try:
+                dados_web = web.coletar(
+                    sess, web.pk_from_link(dados["link"]), ad_ids.get(mid, "")
+                )
+            except Exception as exc:
+                log.warning("Impulsionados: insights web de %s falharam: %s",
+                            mid, exc)
+
         tem = dados["tipo"] == "FEED"
         input_rows.append({
-            "link": dados["link"], "media_id": mid, "conta": conta,
+            "link": dados["link"], "media_id": mid, "conta": dono,
             "campanha": meta.get("campanha", ""),
             "tipo": dados["tipo"],
             "tem_dado": "sim" if tem else f"nao ({dados['tipo'].lower()})",
             "origem": meta.get("origem", "manual"),
         })
         hist_rows.extend(
-            boosted.build_rows([dados], conta, dia, agora, meta.get("campanha", ""))
+            boosted.build_rows([dados], dono, dia, agora,
+                               meta.get("campanha", ""), dados_web)
         )
 
     com_dado = sum(1 for r in input_rows if r["tem_dado"] == "sim")

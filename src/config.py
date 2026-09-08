@@ -118,6 +118,15 @@ POSTS_COLUMNS: List[Dict[str, str]] = [
 # varrer /ads sem filtro traria 185 posts de 2023/24 pra coletar toda hora.
 BOOSTED_DISCOVERY_DAYS = int(os.environ.get("BOOSTED_DISCOVERY_DAYS", "365"))
 
+# Cookie de sessão web por conta. É o que destrava o que a Graph API não dá:
+# visitas/seguidores em REELS (a API recusa por tipo de mídia) e a atribuição
+# ao anúncio. Só o dono do post enxerga o insight dele, por isso é um cookie
+# por conta. Sem os cookies o sync roda igual, com as colunas web em branco.
+IG_SESSIONIDS = {
+    "tiago": os.environ.get("IG_SESSIONID_TIAGO", ""),
+    "metta": os.environ.get("IG_SESSIONID_METTA", ""),
+}
+
 BOOSTED_INPUT_SHEET = "ig_impulsionados"
 BOOSTED_HIST_SHEET = "ig_impulsionados_hist"
 
@@ -151,6 +160,17 @@ BOOSTED_HIST_COLUMNS: List[Dict[str, str]] = [
     # No FIM de propósito — coluna no meio desalinharia as linhas já escritas,
     # e este histórico não é reconstruível pela API.
     {"header": "Campanha",       "key": "campanha",       "format": "@"},
+    # Números da tela do Instagram (sessão web). Existem para QUALQUER tipo de
+    # mídia, Reels incluídos, e a Graph API subconta os mesmos campos: no post
+    # DcEntkdhaR9 ela devolve 329 visitas contra 2.894 daqui.
+    {"header": "Visitas Perfil (IG)", "key": "web_profile_visits", "format": "0"},
+    {"header": "Seguidores (IG)",     "key": "web_follows",        "format": "0"},
+    {"header": "Alcance (IG)",        "key": "web_reach",          "format": "0"},
+    # Atribuído ao ANÚNCIO — é o ganho do período impulsionado.
+    {"header": "Visitas Anúncio",     "key": "ad_profile_visits",  "format": "0"},
+    {"header": "Seguidores Anúncio",  "key": "ad_follows",         "format": "0"},
+    {"header": "Alcance Anúncio",     "key": "ad_reach",           "format": "0"},
+    {"header": "Views Anúncio",       "key": "ad_views",           "format": "0"},
 ]
 
 # Token com ads_read pra descobrir os impulsionamentos sozinho. Sem ele o sync

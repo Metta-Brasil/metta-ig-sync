@@ -85,8 +85,11 @@ def extract_shortcode(link: str) -> str:
 # Fonte 1: descoberta pelo Meta Ads
 # ----------------------------------------------------------------------
 
-def discover_from_ads(token: str) -> Dict[str, str]:
-    """{media_id: nome do anúncio} dos impulsionamentos COM ENTREGA na janela.
+def discover_from_ads(token: str) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """({media_id: nome do anúncio}, {media_id: ad_id}) dos impulsionamentos.
+
+    Só entram anúncios COM ENTREGA na janela. O ad_id sai junto porque é o
+    `adgroup_id` que a query de insights do anúncio exige.
 
     O critério é entrega, não posição na lista nem data de criação.
 
@@ -107,7 +110,7 @@ def discover_from_ads(token: str) -> Dict[str, str]:
     causa disso. O chamador registra quando vem vazio.
     """
     if not token:
-        return {}
+        return {}, {}
 
     base = config.IG_BASE_URL
     sess = requests.Session()
@@ -131,7 +134,7 @@ def discover_from_ads(token: str) -> Dict[str, str]:
     accounts = get("me/adaccounts", fields="id", limit=100).get("data", [])
     if not accounts:
         log.warning("discover_from_ads: nenhuma conta de anúncio acessível.")
-        return {}
+        return {}, {}
 
     hoje = datetime.now(BRT).date()
     desde = hoje - timedelta(days=config.BOOSTED_DISCOVERY_DAYS)
@@ -168,11 +171,12 @@ def discover_from_ads(token: str) -> Dict[str, str]:
             "discover_from_ads: nenhum impulsionamento com entrega nos "
             "últimos %d dias.", config.BOOSTED_DISCOVERY_DAYS,
         )
-        return {}
+        return {}, {}
 
     # 2º passe: o media_id do post ORIGINAL. `/insights` não devolve criativo,
     # então é uma leitura em lote por ids — 1 chamada a cada 50 anúncios.
     found: Dict[str, str] = {}
+    ad_ids: Dict[str, str] = {}
     ids = list(nomes)
     for k in range(0, len(ids), 50):
         lote = ids[k:k + 50]
@@ -189,13 +193,14 @@ def discover_from_ads(token: str) -> Dict[str, str]:
             mid = ((ad or {}).get("creative") or {}).get("source_instagram_media_id")
             if mid and mid not in found:
                 found[mid] = nomes.get(str(ad_id), "")
+                ad_ids[mid] = str(ad_id)
 
     log.info(
         "discover_from_ads: %d anúncio(s) com entrega em %d dias -> %d post(s) "
         "impulsionado(s), em %d conta(s).",
         len(nomes), config.BOOSTED_DISCOVERY_DAYS, len(found), len(accounts),
     )
-    return found
+    return found, ad_ids
 
 
 # ----------------------------------------------------------------------
@@ -251,6 +256,7 @@ def collect(client, media_id: str) -> Optional[Dict[str, Any]]:
     ins = client.get_boost_insights(media_id, meta.get("media_product_type", ""))
     return {
         "media_id": media_id,
+        "dono": meta.get("username", ""),
         "link": meta.get("permalink", ""),
         "legenda": (meta.get("caption") or "").replace("\n", " ")[:120],
         "tipo": meta.get("media_product_type", ""),
@@ -264,14 +270,15 @@ def build_rows(
     dia: date,
     agora: str,
     campanha: str = "",
+    web: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Uma linha de histórico por post coletado."""
+    web = web or {}
     return [
         {
             "data": dia,
             "media_id": c["media_id"],
             "conta": conta,
-            "campanha": campanha,
             "link": c["link"],
             "legenda": c["legenda"],
             "tipo": c["tipo"],
@@ -280,6 +287,11 @@ def build_rows(
             "reach": c.get("reach", ""),
             "views": c.get("views", ""),
             "atualizado": agora,
+            "campanha": campanha,
+            **{k: web.get(k, "") if web.get(k) is not None else ""
+               for k in ("web_profile_visits", "web_follows", "web_reach",
+                         "ad_profile_visits", "ad_follows", "ad_reach",
+                         "ad_views")},
         }
         for c in coletados
     ]
