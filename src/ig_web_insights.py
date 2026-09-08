@@ -87,15 +87,7 @@ class WebSession:
             "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                            "AppleWebKit/537.36 (KHTML, like Gecko) "
                            "Chrome/140.0.0.0 Safari/537.36"),
-            "X-IG-App-ID": APP_ID,
-            "X-ASBD-ID": "359341",
-            "X-Requested-With": "XMLHttpRequest",
-            "Accept": "*/*",
             "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-            "Origin": IG,
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
             "sec-ch-ua": '"Chromium";v="140", "Not=A?Brand";v="24"',
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"macOS"',
@@ -112,7 +104,16 @@ class WebSession:
 
     def preparar(self) -> None:
         """Pega fb_dtsg/lsd/csrftoken de uma página logada qualquer."""
-        r = self.s.get(IG + "/", timeout=60)
+        # Requisição de DOCUMENTO. Com headers de XHR (X-Requested-With,
+        # Accept */*) o Instagram devolve outra resposta e o fb_dtsg não vem.
+        r = self.s.get(IG + "/", timeout=60, headers={
+            "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+                       "image/avif,image/webp,*/*;q=0.8"),
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Upgrade-Insecure-Requests": "1",
+        })
         html = r.text
         if "DTSGInitialData" not in html and '"dtsg"' not in html:
             raise WebInsightsError(
@@ -143,12 +144,21 @@ class WebSession:
             "variables": json.dumps(variables, separators=(",", ":")),
             "server_timestamps": "true", "doc_id": doc_id,
         }
+        # Requisição XHR: aqui sim o conjunto de headers do app.
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "*/*",
             "X-CSRFToken": self.s.cookies.get("csrftoken") or "",
             "X-FB-LSD": self.lsd,
-            "Referer": IG + "/",
+            "X-IG-App-ID": APP_ID,
+            "X-ASBD-ID": "359341",
+            "X-Requested-With": "XMLHttpRequest",
             "X-FB-Friendly-Name": "PolarisMediaInsights",
+            "Origin": IG,
+            "Referer": IG + "/",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
         }
         r = self.s.post(IG + "/api/graphql", data=body, headers=headers, timeout=60)
         txt = r.text
