@@ -406,6 +406,7 @@ def coletar(sess: "WebSession", pk: str, ad_id: str = "") -> Dict[str, Any]:
     out["web_reach"] = _total_value(media.get("umapi_foa_people_based_reach"))
 
     if ad_id:
+      try:
         ad = sess._graphql(DOC_AD, {
             "adgroup_id": str(ad_id),
             "has_fb_placements_for_media": True,
@@ -418,5 +419,8 @@ def coletar(sess: "WebSession", pk: str, ad_id: str = "") -> Dict[str, Any]:
         out["ad_profile_visits"] = _ad_value(w.get("umapi_ad_profile_visits"))
         out["ad_reach"] = _ad_value(w.get("umapi_ad_reach"))
         out["ad_views"] = _ad_value(w.get("umapi_ad_views"))
+      except WebInsightsError as exc:
+        # O total já veio; anúncio indisponível não pode apagar o total.
+        log.warning("insights de anúncio %s indisponíveis: %s", ad_id, exc)
 
     return out
