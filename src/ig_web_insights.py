@@ -113,6 +113,8 @@ class WebSession:
 
         # Sem sessionid avulso mas com a linha completa de cookies: pega o
         # sessionid de dentro dela. A linha completa e a fonte preferida.
+        if not _clean(sessionid) and saved and saved.get("sessionid"):
+            sessionid = saved["sessionid"]
         if not _clean(sessionid) and cookie_header:
             for par in _clean(cookie_header).split(";"):
                 k, _, v = par.strip().partition("=")
